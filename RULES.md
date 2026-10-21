@@ -1,0 +1,12 @@
+# Peachy agent rules
+- The spec is docs/SPEC.md. Progress is docs/PROGRESS.md. Read both before any work.
+- Target: Windows 10/11, Python 3.12, PySide6. A real desktop app. No web, no Electron.
+- Work only on today's stage. Do not refactor or rewrite working modules unless I ask.
+- Never replace working code with placeholders, TODO stubs or fake logic in production code.
+- Never hardcode API keys. Never log screenshots, image bytes, keys or prompt text.
+- Never guess library APIs. Check the official docs (PySide6, google-genai, Pillow, mss, keyring, PyInstaller) and name the page you used.
+- All network and slow work runs off the UI thread (QThread or QRunnable with signals).
+- All Win32 calls live in core/win32.py, via ctypes, with argtypes, restype and error checks.
+- After every change: run `python -m pytest -q`, paste the real output, fix failures, rerun.
+- Never say "works" or "tested" for anything you did not actually run. List what I must test manually.
+- End every session by updating docs/PROGRESS.md: done, verified by tests, needs manual check, known bugs.
