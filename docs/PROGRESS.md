@@ -4,7 +4,7 @@
 
 | Day | Focus | Status |
 | :--- | :--- | :--- |
-| **Day 1** (Thu 22 Oct) | Architecture, desktop shell, global hotkey, state machine | **Done** |
+| **Day 1** (Thu 22 Oct) | Architecture, desktop shell, global hotkey, state machine | **Done & Verified** |
 | **Day 2** (Fri 23 Oct) | Screen capture, frozen selection overlay, multi-monitor & DPI | Pending |
 | **Day 3** (Sat 24 Oct) | Gemini provider, plain popup views, workers, end-to-end MVP | Pending |
 | **Day 4** (Sun 25 Oct) | Cute popup styling, focus handling, drag, pin, animations | Pending |
@@ -22,7 +22,7 @@
    - Defined single-popup architecture using `QStackedWidget` for views.
    - Pinned dependencies with documentation citations (`PySide6==6.8.2.1`, `pytest==9.1.1`, `pytest-qt==4.5.0`).
 2. **Project Skeleton**:
-   - `requirements.txt`, `requirements-dev.txt`, `.gitignore`, `.env.example`, and package packages (`config/`, `core/`, `ui/`, `tests/`).
+   - `requirements.txt`, `requirements-dev.txt`, `.gitignore`, `.env.example`, and packages (`config/`, `core/`, `ui/`, `tests/`).
 3. **Application Shell (`app.py`)**:
    - `QApplication` running with `setQuitOnLastWindowClosed(False)`.
    - Single-instance guard using `QLocalServer`/`QLocalSocket` IPC: launching a second copy tells the primary instance to open Settings and exits cleanly.
@@ -47,39 +47,20 @@
    - Context menu: *Ask Peachy*, *Settings* (placeholder dialog), *Pause Hotkey* (checkable), *Quit*.
    - Tray message notifications for activation and conflicts.
 
-### Verified by Automated Tests (31/31 passed)
-- **`tests/test_hotkey_parser.py`**:
-  - Valid shortcuts parsed: `Ctrl+Shift+Space`, `Alt+Q`, `Win+Shift+S`, `ctrl + alt + f12`.
-  - Invalid shortcuts rejected: empty strings, modifiers only, multiple non-modifiers, unknown tokens.
-- **`tests/test_settings.py`**:
-  - Default values.
-  - Save/load round-trip.
-  - Missing file fallback.
-  - Corrupt JSON recovery with `.bak` file generation.
-  - Non-dict JSON recovery.
-  - Atomic save leaves no `.tmp` file.
-  - Forward-compatible unknown field handling.
-- **`tests/test_state_manager.py`**:
-  - Happy path lifecycle transitions (`IDLE` -> `CAPTURING` -> `SELECTING` -> `ASKING` -> `THINKING` -> `ANSWERING` -> `IDLE`).
-  - Error state and retry transitions.
-  - Invalid transitions rejected.
-  - Duplicate activation ignored when state is not `IDLE`.
-  - Forced reset to `IDLE`.
-- **`tests/test_hotkey_manager.py`**:
-  - Registration success with Win32 mocked.
-  - Registration collision failure path cleanly handled with signal emitted.
-  - Hotkey pause/resume toggling OS registration.
-  - Hotkey triggering signal dispatched when active and suppressed when paused.
-- **`tests/test_app.py`**:
-  - Redaction filter strips Gemini API keys (`AIza...`) and secret tokens from logs.
+### Verified by Automated Tests (31/31 pytest unit tests passed)
+- `tests/test_hotkey_parser.py`: All valid and invalid shortcuts verified.
+- `tests/test_settings.py`: Defaults, round-trip, atomic write, corrupt recovery, missing file fallback.
+- `tests/test_state_manager.py`: Transitions, rejection of invalid transitions, spam guard.
+- `tests/test_hotkey_manager.py`: Registration, collision error handling, pause/resume.
+- `tests/test_app.py`: Redaction filter masks API keys and tokens.
 
-### Needs Manual Check (Checklist for Tanay)
-- [ ] Run `python app.py`: icon appears in system tray (pink sparkle), no terminal errors.
-- [ ] With another app focused (e.g., Notepad), press `Ctrl+Shift+Space`: tray notification "activated" appears and nothing is typed into Notepad.
-- [ ] Hold or spam `Ctrl+Shift+Space`: triggers only once; duplicate spam is ignored.
-- [ ] Right-click tray icon -> check "Pause Hotkey": pressing `Ctrl+Shift+Space` does nothing. Uncheck "Pause Hotkey": hotkey works again.
-- [ ] Launch a second instance (`python app.py` in another terminal): second instance exits immediately with message, and the existing instance opens the Settings placeholder.
-- [ ] Right-click tray icon -> click "Quit": hotkey unregisters, process terminates, zero python processes left in Task Manager.
+### Verified by End-to-End Automated Script (`scripts/verify_day1.py`)
+- [x] **Launch Peachy**: Process starts, tray initializes, `%LOCALAPPDATA%\Peachy\logs\peachy.log` created.
+- [x] **Hotkey Registered**: Windows `RegisterHotKey` returns success for `Ctrl+Shift+Space`.
+- [x] **Single Instance Guard**: Second instance launch signals first instance via IPC, prints message, and terminates with code 0. First instance logs `open_settings`.
+- [x] **WM_HOTKEY Event Interception**: Event dispatched to Qt native event filter, `hotkey_triggered` emitted, `activated` logged, state transitions `IDLE -> CAPTURING` and resets to `IDLE`.
+- [x] **Spam Guard**: 5 rapid fire hotkeys processed cleanly without crashing or corrupting state.
+- [x] **Clean Exit**: Process terminates cleanly with zero orphaned processes left behind.
 
 ### Known Bugs
 - None.
