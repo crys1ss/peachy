@@ -17,22 +17,20 @@
 
 ### What Works & Is Done
 1. **Architecture & Design**:
-   - Authored and committed [docs/ARCHITECTURE.md](file:///c:/Users/TANAY/Downloads/Peachy/docs/ARCHITECTURE.md).
-   - Designed 7-state finite state machine (`IDLE`, `CAPTURING`, `SELECTING`, `ASKING`, `THINKING`, `ANSWERING`, `ERROR`).
-   - Defined single-popup architecture using `QStackedWidget` for views.
+   - [docs/ARCHITECTURE.md](file:///c:/Users/TANAY/Downloads/Peachy/docs/ARCHITECTURE.md) defines system decomposition, 7-state finite state machine (`IDLE`, `CAPTURING`, `SELECTING`, `ASKING`, `THINKING`, `ANSWERING`, `ERROR`), threading model, and Windows OS mitigation strategies.
    - Pinned dependencies with documentation citations (`PySide6==6.8.2.1`, `pytest==9.1.1`, `pytest-qt==4.5.0`).
 2. **Project Skeleton**:
-   - `requirements.txt`, `requirements-dev.txt`, `.gitignore`, `.env.example`, and packages (`config/`, `core/`, `ui/`, `tests/`).
+   - `requirements.txt`, `requirements-dev.txt`, `.gitignore`, `.env.example` (placeholders only), and packages (`config/`, `core/`, `ui/`, `tests/`).
 3. **Application Shell (`app.py`)**:
-   - `QApplication` running with `setQuitOnLastWindowClosed(False)`.
+   - `QApplication` with `setQuitOnLastWindowClosed(False)`.
    - Single-instance guard using `QLocalServer`/`QLocalSocket` IPC: launching a second copy tells the primary instance to open Settings and exits cleanly.
-   - Rotated file logging at `%LOCALAPPDATA%\Peachy\logs\peachy.log` with `RedactionFilter` (masks API keys and auth tokens).
+   - Rotated file logging at `%LOCALAPPDATA%\Peachy\logs\peachy.log` with `RedactionFilter` (masks keys and tokens).
 4. **Settings (`config/settings.py`)**:
    - Dataclass settings (`hotkey="Ctrl+Shift+Space"`, `model="gemini-2.5-flash"`, `pinned=True`, etc.).
    - Atomic saving to `%APPDATA%\Peachy\settings.json` via temp file + `os.replace`.
    - Automatic recovery: missing file uses defaults; corrupt file creates `.json.bak` and falls back to defaults without crashing. API keys are never stored here.
 5. **Win32 Layer (`core/win32.py`)**:
-   - Strict `ctypes` bindings for `RegisterHotKey`, `UnregisterHotKey`, `GetForegroundWindow`, and `SetForegroundWindow` with `argtypes`, `restype`, and `GetLastError` error reporting.
+   - Strict `ctypes` bindings for `RegisterHotKey`, `UnregisterHotKey`, `GetForegroundWindow`, and `SetForegroundWindow` with `argtypes`, `restype`, and `GetLastError` error reporting. No Win32 calls outside this file.
 6. **Global Hotkey (`core/hotkey_manager.py`)**:
    - Human-readable shortcut parser supporting `Ctrl+Shift+Space`, `Alt+Q`, function keys, navigation keys, and modifiers.
    - Registers hotkey with `MOD_NOREPEAT` via Windows API.
@@ -46,6 +44,7 @@
    - Custom anti-aliased pink sparkle icon (`QPainter`).
    - Context menu: *Ask Peachy*, *Settings* (placeholder dialog), *Pause Hotkey* (checkable), *Quit*.
    - Tray message notifications for activation and conflicts.
+   - Activation strictly logs `"activated"` and shows tray notification without wiring any Day 2+ features.
 
 ### Verified by Automated Tests (31/31 pytest unit tests passed)
 - `tests/test_hotkey_parser.py`: All valid and invalid shortcuts verified.
@@ -55,12 +54,18 @@
 - `tests/test_app.py`: Redaction filter masks API keys and tokens.
 
 ### Verified by End-to-End Automated Script (`scripts/verify_day1.py`)
-- [x] **Launch Peachy**: Process starts, tray initializes, `%LOCALAPPDATA%\Peachy\logs\peachy.log` created.
+- [x] **Launch Peachy**: Process starts, tray initializes, `%LOCALAPPDATA%\Peachy\logs\peachy.log` created with zero tracebacks.
 - [x] **Hotkey Registered**: Windows `RegisterHotKey` returns success for `Ctrl+Shift+Space`.
 - [x] **Single Instance Guard**: Second instance launch signals first instance via IPC, prints message, and terminates with code 0. First instance logs `open_settings`.
 - [x] **WM_HOTKEY Event Interception**: Event dispatched to Qt native event filter, `hotkey_triggered` emitted, `activated` logged, state transitions `IDLE -> CAPTURING` and resets to `IDLE`.
 - [x] **Spam Guard**: 5 rapid fire hotkeys processed cleanly without crashing or corrupting state.
 - [x] **Clean Exit**: Process terminates cleanly with zero orphaned processes left behind.
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Run `python app.py`: Verify visually that the pink sparkle icon appears in the Windows system tray.
+- [ ] With another application focused (e.g., Notepad), press `Ctrl+Shift+Space`: Verify Windows toast notification "activated" appears and nothing is typed into Notepad.
+- [ ] Right-click tray icon -> check "Pause Hotkey": Verify pressing `Ctrl+Shift+Space` does nothing. Uncheck "Pause Hotkey": verify it works again.
+- [ ] Right-click tray icon -> click "Quit": Verify process exits cleanly.
 
 ### Known Bugs
 - None.

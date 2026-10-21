@@ -4,7 +4,7 @@ Application entry point featuring:
 - Single-instance guard (signals active instance and exits if already running)
 - Secure rotated logging to %LOCALAPPDATA%\\Peachy\\logs with privacy redaction
 - System tray residence (setQuitOnLastWindowClosed(False))
-- Global hotkey listener, finite state machine, and multi-monitor selection overlay
+- Global hotkey listener and finite state machine integration
 """
 
 from __future__ import annotations
@@ -15,16 +15,11 @@ import os
 from pathlib import Path
 import re
 import sys
-import tempfile
-import time
 
 from PySide6.QtCore import QObject
-from PySide6.QtGui import QImage
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
-from capture.screen_capture import ScreenCaptureManager
-from capture.selection_overlay import SelectionOverlayManager
 from config.settings import load_settings
 from core.hotkey_manager import HotkeyManager
 from core.state_manager import AppState, StateManager
@@ -98,7 +93,7 @@ def setup_logging() -> Path:
 
 
 class PeachyApp(QObject):
-    """Main application coordinator for Peachy."""
+    """Main application coordinator for Day 1."""
 
     def __init__(self, app: QApplication, server: QLocalServer):
         super().__init__()
@@ -118,12 +113,6 @@ class PeachyApp(QObject):
         # 4. Hotkey Manager
         self.hotkey_manager = HotkeyManager(self)
 
-        # 5. Capture & Overlay Managers (Day 2)
-        self.capture_manager = ScreenCaptureManager()
-        self.overlay_manager = SelectionOverlayManager()
-        self.last_crop_image: QImage | None = None
-        self.last_crop_rect: tuple | None = None
-
         self._connect_signals()
 
         # Register configured hotkey
@@ -139,7 +128,7 @@ class PeachyApp(QObject):
         self.logger.info("Peachy started. Hotkey: %s", self.settings.hotkey)
 
     def _connect_signals(self) -> None:
-        """Wire UI, Hotkey, Overlay, and State Machine signals."""
+        """Wire UI, Hotkey, and State Machine signals."""
         self.hotkey_manager.hotkey_triggered.connect(self.on_activated)
         self.hotkey_manager.registration_failed.connect(
             lambda msg: self.tray_manager.show_notification("Hotkey Conflict", msg)
@@ -148,10 +137,6 @@ class PeachyApp(QObject):
         self.tray_manager.ask_requested.connect(self.on_activated)
         self.tray_manager.pause_toggled.connect(self.hotkey_manager.set_paused)
         self.tray_manager.quit_requested.connect(self.quit)
-
-        # Overlay events
-        self.overlay_manager.selection_confirmed.connect(self.on_selection_confirmed)
-        self.overlay_manager.selection_cancelled.connect(self.on_selection_cancelled)
 
         # Incoming single-instance IPC connections
         self.server.newConnection.connect(self._handle_ipc_connection)
@@ -181,66 +166,20 @@ class PeachyApp(QObject):
             return
 
         self.logger.info("activated")
-        self.state_manager.request_activation()  # IDLE -> CAPTURING
+        self.state_manager.request_activation()
 
-        # 1. Store active foreground window before showing any UI
-        self.capture_manager.store_foreground_window()
-
-        # 2. Capture all monitors before overlays are visible
-        monitors = self.capture_manager.capture_all_screens()
-        if not monitors:
-            self.logger.error("Capture failed: no monitors found.")
-            self.state_manager.reset_to_idle()
-            self.capture_manager.restore_foreground_window()
-            self.tray_manager.show_notification("Peachy", "Screen capture failed.")
-            return
-
-        # 3. Transition to SELECTING and present overlay windows
-        self.state_manager.transition_to(AppState.SELECTING)
-        self.overlay_manager.start_selection(monitors)
-
-    def on_selection_confirmed(self, crop: QImage, monitor, rect: tuple) -> None:
-        """Handle confirmed screen selection crop."""
-        self.logger.info(
-            "Selection confirmed: %dx%d physical crop on %s",
-            crop.width(),
-            crop.height(),
-            monitor.name,
+        # For Day 1, activation only logs 'activated' and shows a tray notification
+        self.tray_manager.show_notification(
+            "Peachy",
+            "activated",
         )
-        self.last_crop_image = crop
-        self.last_crop_rect = rect
 
-        # Debug switch: save crop PNG if PEACHY_DEBUG_SAVE_CROP=1
-        if os.environ.get("PEACHY_DEBUG_SAVE_CROP") == "1":
-            debug_dir = Path(tempfile.gettempdir()) / "Peachy" / "debug_crops"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            crop_path = debug_dir / f"crop_{int(time.time() * 1000)}.png"
-            crop.save(str(crop_path), "PNG")
-            self.logger.info("Debug crop saved to %s", crop_path)
-            self.tray_manager.show_notification(
-                "Peachy Crop Saved",
-                f"Saved {crop.width()}x{crop.height()} crop to temp folder.",
-            )
-        else:
-            self.tray_manager.show_notification(
-                "Peachy",
-                f"Selected {crop.width()}x{crop.height()} region.",
-            )
-
-        # For Day 2, keep crop in memory and return cleanly to IDLE
+        # Reset to IDLE for Day 1
         self.state_manager.reset_to_idle()
-        self.capture_manager.restore_foreground_window()
-
-    def on_selection_cancelled(self) -> None:
-        """Handle selection cancellation (Esc, right click, tiny selection)."""
-        self.logger.info("Selection cancelled. Returning to IDLE.")
-        self.state_manager.reset_to_idle()
-        self.capture_manager.restore_foreground_window()
 
     def quit(self) -> None:
         """Clean shutdown handler."""
         self.logger.info("Shutting down Peachy...")
-        self.overlay_manager.close_all()
         self.hotkey_manager.cleanup()
         self.tray_manager.hide()
         self.server.close()
