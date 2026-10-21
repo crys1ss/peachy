@@ -319,6 +319,11 @@ class OverlayManager(QWidget):
         cropped_img = extract_crop(overlay.captured.image, (px, py, pw, ph))
         logger.info("Crop confirmed: %d x %d physical px (DPR %.2f)", pw, ph, dpr)
 
+        # Record selection geometry and target screen for popup positioning
+        global_origin = overlay.geometry().topLeft()
+        self.last_selection_rect = QRect(global_origin + logical_rect.topLeft(), logical_rect.size())
+        self.last_screen = overlay.captured.screen
+
         self.cleanup()
 
         # Emit confirmed image

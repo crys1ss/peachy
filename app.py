@@ -28,8 +28,10 @@ from capture.screen_capture import capture_all_monitors
 from capture.selection_overlay import OverlayManager
 from config.settings import load_settings
 from core import win32
+from core.app_controller import AppController
 from core.hotkey_manager import HotkeyManager
 from core.state_manager import AppState, StateManager
+from ui.peachy_popup import PeachyPopup
 from ui.tray_manager import TrayManager
 
 SINGLE_INSTANCE_SERVER_NAME = "Peachy_Single_Instance_IPC_Server"
@@ -122,7 +124,20 @@ class PeachyApp(QObject):
 
         # 5. Screen Capture Overlay Coordinator
         self.overlay_manager = OverlayManager()
-        self.current_crop: Optional[QImage] = None
+
+        # 6. Peachy Popup Window
+        self.popup = PeachyPopup()
+
+        # 7. App Controller
+        self.controller = AppController(
+            state_manager=self.state_manager,
+            hotkey_manager=self.hotkey_manager,
+            tray_manager=self.tray_manager,
+            overlay_manager=self.overlay_manager,
+            popup=self.popup,
+            settings=self.settings,
+            parent=self,
+        )
 
         self._connect_signals()
 
@@ -140,18 +155,12 @@ class PeachyApp(QObject):
 
     def _connect_signals(self) -> None:
         """Wire UI, Hotkey, and State Machine signals."""
-        self.hotkey_manager.hotkey_triggered.connect(self.on_activated)
         self.hotkey_manager.registration_failed.connect(
             lambda msg: self.tray_manager.show_notification("Hotkey Conflict", msg)
         )
 
-        self.tray_manager.ask_requested.connect(self.on_activated)
         self.tray_manager.pause_toggled.connect(self.hotkey_manager.set_paused)
         self.tray_manager.quit_requested.connect(self.quit)
-
-        # Overlay signals
-        self.overlay_manager.crop_confirmed.connect(self._on_crop_confirmed)
-        self.overlay_manager.cancelled.connect(self._on_selection_cancelled)
 
         # Incoming single-instance IPC connections
         self.server.newConnection.connect(self._handle_ipc_connection)
@@ -172,68 +181,17 @@ class PeachyApp(QObject):
             socket.disconnectFromServer()
 
     def on_activated(self) -> None:
-        """Handler for hotkey and tray activation."""
-        if not self.state_manager.can_activate():
-            self.logger.info(
-                "Activation ignored: state is %s (must be IDLE)",
-                self.state_manager.state.value,
-            )
-            return
-
-        # 1. Store current foreground HWND so we can restore it on cancel
-        saved_hwnd = win32.get_foreground_window()
-        self.logger.info("activated (foreground HWND: %d)", saved_hwnd)
-
-        # 2. Transition IDLE -> CAPTURING
-        if not self.state_manager.request_activation():
-            return
-
-        # 3. Synchronously capture every monitor before any Peachy window is visible
-        try:
-            monitors = capture_all_monitors()
-            if not monitors:
-                raise RuntimeError("No screens detected by screen capture.")
-
-            # 4. Transition CAPTURING -> SELECTING
-            self.state_manager.transition_to(AppState.SELECTING)
-
-            # 5. Display frozen selection overlays
-            self.overlay_manager.start_selection(monitors, saved_hwnd)
-        except Exception as e:
-            self.logger.exception("Screen capture / overlay launch failed: %s", e)
-            self.overlay_manager.cleanup()
-            if saved_hwnd:
-                win32.set_foreground_window(saved_hwnd)
-            self.state_manager.reset_to_idle()
-
-    def _on_crop_confirmed(self, crop: QImage) -> None:
-        """Handler when user confirms a valid selection."""
-        self.logger.info("Crop confirmed: %dx%d physical px", crop.width(), crop.height())
-        self.current_crop = crop
-
-        # Debug switch: if env var PEACHY_DEBUG_SAVE_CROP=1, save crop PNG to temp folder
-        if os.environ.get("PEACHY_DEBUG_SAVE_CROP") == "1":
-            temp_dir = Path(tempfile.gettempdir()) / "peachy_crops"
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            crop_path = temp_dir / f"crop_{timestamp}.png"
-            saved = crop.save(str(crop_path), "PNG")
-            self.logger.info("Debug crop saved to %s (success=%s)", crop_path, saved)
-
-        # For Day 2, crop is kept in memory and state returns to IDLE
-        self.state_manager.transition_to(AppState.IDLE)
-
-    def _on_selection_cancelled(self) -> None:
-        """Handler when selection is cancelled (Esc, right click, or 60s timeout)."""
-        self.logger.info("Selection cancelled, returning to IDLE.")
-        self.state_manager.transition_to(AppState.IDLE)
+        """Delegate activation to controller."""
+        self.controller.on_activated()
 
     def quit(self) -> None:
         """Clean shutdown handler."""
         self.logger.info("Shutting down Peachy...")
+        self.controller.on_popup_cancelled()
         self.overlay_manager.cleanup()
         self.hotkey_manager.cleanup()
         self.tray_manager.hide()
+        self.popup.close()
         self.server.close()
         self.app.quit()
 

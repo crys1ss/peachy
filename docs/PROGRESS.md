@@ -6,7 +6,7 @@
 | :--- | :--- | :--- |
 | **Day 1** (Thu 22 Oct) | Architecture, desktop shell, global hotkey, state machine | **Done & Verified** |
 | **Day 2** (Fri 23 Oct) | Screen capture, frozen selection overlay, multi-monitor & DPI | **Done & Verified** |
-| **Day 3** (Sat 24 Oct) | Gemini provider, plain popup views, workers, end-to-end MVP | Pending |
+| **Day 3** (Sat 24 Oct) | Gemini provider, plain popup views, workers, end-to-end MVP | **Done & Verified** |
 | **Day 4** (Sun 25 Oct) | Cute popup styling, focus handling, drag, pin, animations | Pending |
 | **Day 5** (Mon 26 Oct) | Settings window, keyring, double-tap C hook, hardening pass | Pending |
 | **Day 6** (Tue 27 Oct) | PyInstaller build, onedir packaging, README, acceptance | Pending |
@@ -145,3 +145,90 @@
 
 ### Known Bugs
 - None.
+
+---
+
+## Day 3 Summary (Saturday 24 Oct)
+
+### What Works & Is Done
+1. **Abstract AI Provider Interface ([ai/provider.py](file:///c:/Users/TANAY/Downloads/Peachy/ai/provider.py))**:
+   - `BaseAIProvider`: Strict abstract base class requiring `ask(image_png, question, history) -> AnswerResult`.
+   - `AnswerResult`: Dataclass carrying response markdown text and updated multi-turn conversation history.
+   - Typed Provider Errors with friendly user-facing messages: `MissingKey`, `InvalidKey`, `RateLimited`, `Timeout`, `Network`, `Blocked`, `EmptyResponse`, and `Unknown`.
+2. **Gemini Flash Implementation ([ai/gemini_provider.py](file:///c:/Users/TANAY/Downloads/Peachy/ai/gemini_provider.py))**:
+   - Built on official `google-genai` SDK (`from google import genai`).
+   - Dynamic model resolution: Reads from `settings.json` (`gemini-3.8-flash`) with override via `PEACHY_MODEL` environment variable.
+   - Secure Key Access: API key read strictly through `get_gemini_api_key()` from `GEMINI_API_KEY`.
+   - Image Optimization: Uses Pillow to enforce PNG format, downscaling proportionally only if the long dimension exceeds 2048 px (never upscaled).
+   - System Instruction: Configured with mandated prompt for concise, structured screen assistance.
+   - Multi-Turn History: Preserves chat context across follow-up queries without re-transmitting image bytes.
+   - Error Translation: Maps Google SDK HTTP exceptions and content blocks to typed `ProviderError` instances.
+3. **Background Worker & Threading ([core/worker.py](file:///c:/Users/TANAY/Downloads/Peachy/core/worker.py))**:
+   - `GeminiWorker(QThread)`: Offloads network calls from GUI thread.
+   - Request ID tagging: Obsoletes and drops stale responses/errors when request IDs don't match.
+   - Immediate cancellation: Flags workers as cancelled so delayed network packets don't alter UI.
+   - 45-second hard timeout: `QTimer` triggers `TimeoutError` if Gemini or network hangs.
+4. **Popup Interface with Plain Styling ([ui/peachy_popup.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/peachy_popup.py))**:
+   - Unified window with `QStackedWidget` managing 4 distinct views:
+     - **Ask View**: Thumbnail preview of crop, auto-focused question input, Send (Enter), Cancel (Esc). Empty questions allowed for auto-explanation.
+     - **Thinking View**: Minimal "thinking..." label and Cancel button.
+     - **Answer View**: `QTextBrowser` with Markdown support and automatic word wrapping, Copy to clipboard button, Follow-up input field with Send, New Screenshot button, and Close button.
+     - **Error View**: Friendly error message and Retry button.
+   - Smart Adjacent Positioning: `calculate_popup_position` positions popup to the right, left, or below the selection, clamped entirely within the active monitor's available geometry.
+5. **Full Loop Orchestration ([core/app_controller.py](file:///c:/Users/TANAY/Downloads/Peachy/core/app_controller.py))**:
+   - End-to-end integration: Hotkey -> Capture -> Overlay -> Popup -> Provider.
+   - Window Focus Preservation: Stores foreground `HWND` upon hotkey trigger and restores it via Win32 upon popup closure.
+   - Safe Resource Cleanup: Releases crop image bytes and clears chat state upon returning to `IDLE`.
+6. **Diagnostic & Smoke Tools**:
+   - [scripts/list_models.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/list_models.py): Enumerates all Gemini models supporting content generation.
+   - [scripts/smoke_gemini.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/smoke_gemini.py): Generates a synthetic "2 + 2 = ?" PNG, executes a real Gemini call, and verifies correct model output.
+
+### Verified by Automated Tests (65/65 pytest tests passed)
+- `tests/test_gemini_provider.py` (10 tests):
+  - `test_missing_key_raises_missing_key_error`: Detects absent API key.
+  - `test_request_contains_image_part_text_and_model_from_settings`: Validates SDK request payloads.
+  - `test_model_name_env_override`: Confirms `PEACHY_MODEL` env override.
+  - `test_prepare_image_downscale_only`: Proves downscaling >2048px and preservation of <=2048px.
+  - `test_sdk_exception_mapping_*`: Validates mapping for `InvalidKey`, `RateLimited`, `Timeout`, `Network`, and `Blocked`.
+  - `test_empty_response_error`: Handles empty SDK candidate responses.
+- `tests/test_app_controller.py` (5 integration tests):
+  - `test_full_happy_path`: Full loop through `IDLE -> CAPTURING -> SELECTING -> ASKING -> THINKING -> ANSWERING -> Follow-up -> Close`.
+  - `test_stale_response_dropped`: Drops delayed responses after user cancellation.
+  - `test_double_send_blocked_while_thinking`: Prevents duplicate requests while thinking.
+  - `test_missing_key_shows_error_view`: Displays friendly error when key is omitted.
+  - `test_hard_timeout_fires_and_shows_error`: Triggers timeout error upon 45s deadline.
+- Prior Day Tests (50 tests): All geometry, crop, overlay, settings, hotkey, and state machine tests continue passing.
+
+### Verified by Real Network Smoke Test (`scripts/smoke_gemini.py`)
+```
+============================================================
+Peachy: Gemini Provider Smoke Test
+============================================================
+Generating test image ('2 + 2 = ?')...
+Test image generated (1954 bytes PNG).
+Sending multimodal request using model 'gemini-3.8-flash'...
+
+--- Gemini Response ---
+**4**
+-----------------------
+
+History turns: 2
+SMOKE TEST SUCCESSFUL!
+```
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Run `python scripts/list_models.py`: Confirm your API key prints the available Gemini models.
+- [ ] Run `python scripts/smoke_gemini.py`: Verify that the live test prints `**4**`.
+- [ ] Run `python app.py`:
+  - Press `Ctrl+Shift+Space` to freeze the screen and drag a box around any text, code, or image.
+  - On release, verify the plain Ask popup appears immediately next to the cropped region with a small thumbnail.
+  - Press `Enter` with an empty prompt (or type a question): verify the popup transitions to "thinking...".
+  - Verify the popup displays the markdown response in the Answer view.
+  - Click "Copy": paste into Notepad to verify clipboard contents.
+  - Type a follow-up question in the follow-up field and press Enter: verify Peachy responds with conversation context retained.
+  - Click "Close" or press `Esc`: verify popup closes, focus returns to the previous app, and memory is freed.
+  - Click "New Screenshot": verify screen freezes immediately for a new selection.
+
+### Known Bugs
+- None.
+

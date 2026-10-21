@@ -22,7 +22,7 @@ class Settings:
     """Application user settings with sensible defaults."""
 
     hotkey: str = "Ctrl+Shift+Space"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.8-flash"
     pinned: bool = True
     double_tap_enabled: bool = False
     double_tap_interval_ms: int = 280
