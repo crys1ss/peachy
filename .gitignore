@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Pytest
+.pytest_cache/
+
+# Environment & Keys
+.env
+.env.*
+!.env.example
+
+# Peachy local state & logs
+settings.json.bak
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
