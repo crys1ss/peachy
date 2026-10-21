@@ -16,6 +16,7 @@ dist/
 
 # Environment & Keys
 .env
+*.env
 .env.*
 !.env.example
 

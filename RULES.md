@@ -10,3 +10,4 @@
 - After every change: run `python -m pytest -q`, paste the real output, fix failures, rerun.
 - Never say "works" or "tested" for anything you did not actually run. List what I must test manually.
 - End every session by updating docs/PROGRESS.md: done, verified by tests, needs manual check, known bugs.
+- Never write real API keys, tokens or passwords into any file, test, log, doc or commit. Tests use fake values only. Before every commit run `git grep -n "AIza"` and stop if it finds anything.
