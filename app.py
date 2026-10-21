@@ -15,12 +15,19 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
+import time
+from typing import Optional
 
 from PySide6.QtCore import QObject
+from PySide6.QtGui import QImage
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
+from capture.screen_capture import capture_all_monitors
+from capture.selection_overlay import OverlayManager
 from config.settings import load_settings
+from core import win32
 from core.hotkey_manager import HotkeyManager
 from core.state_manager import AppState, StateManager
 from ui.tray_manager import TrayManager
@@ -113,6 +120,10 @@ class PeachyApp(QObject):
         # 4. Hotkey Manager
         self.hotkey_manager = HotkeyManager(self)
 
+        # 5. Screen Capture Overlay Coordinator
+        self.overlay_manager = OverlayManager()
+        self.current_crop: Optional[QImage] = None
+
         self._connect_signals()
 
         # Register configured hotkey
@@ -137,6 +148,10 @@ class PeachyApp(QObject):
         self.tray_manager.ask_requested.connect(self.on_activated)
         self.tray_manager.pause_toggled.connect(self.hotkey_manager.set_paused)
         self.tray_manager.quit_requested.connect(self.quit)
+
+        # Overlay signals
+        self.overlay_manager.crop_confirmed.connect(self._on_crop_confirmed)
+        self.overlay_manager.cancelled.connect(self._on_selection_cancelled)
 
         # Incoming single-instance IPC connections
         self.server.newConnection.connect(self._handle_ipc_connection)
@@ -165,21 +180,58 @@ class PeachyApp(QObject):
             )
             return
 
-        self.logger.info("activated")
-        self.state_manager.request_activation()
+        # 1. Store current foreground HWND so we can restore it on cancel
+        saved_hwnd = win32.get_foreground_window()
+        self.logger.info("activated (foreground HWND: %d)", saved_hwnd)
 
-        # For Day 1, activation only logs 'activated' and shows a tray notification
-        self.tray_manager.show_notification(
-            "Peachy",
-            "activated",
-        )
+        # 2. Transition IDLE -> CAPTURING
+        if not self.state_manager.request_activation():
+            return
 
-        # Reset to IDLE for Day 1
-        self.state_manager.reset_to_idle()
+        # 3. Synchronously capture every monitor before any Peachy window is visible
+        try:
+            monitors = capture_all_monitors()
+            if not monitors:
+                raise RuntimeError("No screens detected by screen capture.")
+
+            # 4. Transition CAPTURING -> SELECTING
+            self.state_manager.transition_to(AppState.SELECTING)
+
+            # 5. Display frozen selection overlays
+            self.overlay_manager.start_selection(monitors, saved_hwnd)
+        except Exception as e:
+            self.logger.exception("Screen capture / overlay launch failed: %s", e)
+            self.overlay_manager.cleanup()
+            if saved_hwnd:
+                win32.set_foreground_window(saved_hwnd)
+            self.state_manager.reset_to_idle()
+
+    def _on_crop_confirmed(self, crop: QImage) -> None:
+        """Handler when user confirms a valid selection."""
+        self.logger.info("Crop confirmed: %dx%d physical px", crop.width(), crop.height())
+        self.current_crop = crop
+
+        # Debug switch: if env var PEACHY_DEBUG_SAVE_CROP=1, save crop PNG to temp folder
+        if os.environ.get("PEACHY_DEBUG_SAVE_CROP") == "1":
+            temp_dir = Path(tempfile.gettempdir()) / "peachy_crops"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            crop_path = temp_dir / f"crop_{timestamp}.png"
+            saved = crop.save(str(crop_path), "PNG")
+            self.logger.info("Debug crop saved to %s (success=%s)", crop_path, saved)
+
+        # For Day 2, crop is kept in memory and state returns to IDLE
+        self.state_manager.transition_to(AppState.IDLE)
+
+    def _on_selection_cancelled(self) -> None:
+        """Handler when selection is cancelled (Esc, right click, or 60s timeout)."""
+        self.logger.info("Selection cancelled, returning to IDLE.")
+        self.state_manager.transition_to(AppState.IDLE)
 
     def quit(self) -> None:
         """Clean shutdown handler."""
         self.logger.info("Shutting down Peachy...")
+        self.overlay_manager.cleanup()
         self.hotkey_manager.cleanup()
         self.tray_manager.hide()
         self.server.close()

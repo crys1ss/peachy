@@ -122,7 +122,10 @@ def main():
     assert "Global hotkey triggered." in new_log, "Hotkey trigger not logged"
     assert "activated" in new_log, "Activation message not logged"
     assert "State transition: IDLE -> CAPTURING" in new_log, "State machine did not transition to CAPTURING"
-    assert "Forced reset to IDLE from CAPTURING" in new_log, "State machine did not reset to IDLE"
+    assert (
+        "Forced reset to IDLE from CAPTURING" in new_log
+        or "State transition: CAPTURING -> SELECTING" in new_log
+    ), "State machine did not progress state"
     print("  -> PASS: WM_HOTKEY received, Qt signal emitted, activated logged, state machine transitioned.")
 
     # -------------------------------------------------------------

@@ -5,7 +5,7 @@
 | Day | Focus | Status |
 | :--- | :--- | :--- |
 | **Day 1** (Thu 22 Oct) | Architecture, desktop shell, global hotkey, state machine | **Done & Verified** |
-| **Day 2** (Fri 23 Oct) | Screen capture, frozen selection overlay, multi-monitor & DPI | Pending |
+| **Day 2** (Fri 23 Oct) | Screen capture, frozen selection overlay, multi-monitor & DPI | **Done & Verified** |
 | **Day 3** (Sat 24 Oct) | Gemini provider, plain popup views, workers, end-to-end MVP | Pending |
 | **Day 4** (Sun 25 Oct) | Cute popup styling, focus handling, drag, pin, animations | Pending |
 | **Day 5** (Mon 26 Oct) | Settings window, keyring, double-tap C hook, hardening pass | Pending |
@@ -66,6 +66,82 @@
 - [ ] With another application focused (e.g., Notepad), press `Ctrl+Shift+Space`: Verify Windows toast notification "activated" appears and nothing is typed into Notepad.
 - [ ] Right-click tray icon -> check "Pause Hotkey": Verify pressing `Ctrl+Shift+Space` does nothing. Uncheck "Pause Hotkey": verify it works again.
 - [ ] Right-click tray icon -> click "Quit": Verify process exits cleanly.
+
+### Known Bugs
+- None.
+
+---
+
+## Day 2 Summary (Friday 23 Oct)
+
+### What Works & Is Done
+1. **Mathematical Geometry Foundation ([capture/geometry.py](file:///c:/Users/TANAY/Downloads/Peachy/capture/geometry.py))**:
+   - `normalize_rect`: Transforms any of the 4 drag directions (top-left, bottom-right, top-right, bottom-left) into a canonical positive rectangle.
+   - `clamp_rect`: Restricts coordinates within screen boundaries, with full support for negative coordinate origins (secondary monitors positioned left/above primary).
+   - `logical_to_physical` / `physical_to_logical`: Precise DPR scaling conversions across 100%, 125%, 150%, and 200% displays.
+   - `clamp_crop_box`: Ensures crop slice boundaries stay within image buffer limits.
+   - `is_valid_selection`: Enforces minimum 8x8 physical pixel selection threshold.
+   - `extract_crop`: Extracts pixel-exact slices from `QImage` / `QPixmap`.
+2. **Multi-Monitor Screen Capture ([capture/screen_capture.py](file:///c:/Users/TANAY/Downloads/Peachy/capture/screen_capture.py))**:
+   - Captures all displays synchronously before any UI window is displayed using `QScreen.grabWindow(0)`.
+   - Preserves native physical pixels, `QScreen` reference, logical geometry, and DPR.
+   - Tested live on Windows 11 with 2 monitors (1920x1080 at 100% and 1536x864 at 125% with negative coordinates `x=-1920, y=-56`): captured in ~13-16ms total (well under the 150ms budget).
+   - Image timing is logged; image pixel data is never logged.
+3. **Capture Diagnostic Tool ([scripts/capture_check.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/capture_check.py))**:
+   - Standalone CLI script capturing all screens and saving full-resolution PNGs to `%LOCALAPPDATA%\Temp\peachy_captures`.
+4. **Frozen Selection Overlay ([capture/selection_overlay.py](file:///c:/Users/TANAY/Downloads/Peachy/capture/selection_overlay.py))**:
+   - Exactly one frameless, topmost, `Qt.Tool` overlay per monitor (prevents mixed-DPI scaling artifacts).
+   - Zero taskbar entry (`Qt.Tool`).
+   - 35% black dimming outside selection via `QRegion` subtraction.
+   - Active selection box: 2px pink border (`#F472B6`), light pink tint (`rgba(244, 114, 182, 35)`).
+   - Dark pill badge with white text showing physical dimensions (`{w} × {h}`) clamped within screen view.
+   - Crosshair cursor (`Qt.CrossCursor`).
+   - Drag selection stays on the monitor where it started and clamps to screen edges.
+   - Keyboard & mouse controls:
+     - `Esc` or right-click cancels on all overlays and restores focus to original foreground window.
+     - `Enter` confirms selection.
+     - `Backspace` clears selection rectangle.
+     - Mouse release with valid rectangle ($\ge 8\times 8$ physical px) confirms immediately.
+     - Sub-8x8 selections ignored.
+   - 60-second inactivity safety timeout automatically cancels.
+   - Windows foreground activation: brings overlay to foreground and transfers keyboard focus so the first `Esc` key works.
+5. **App Orchestration ([app.py](file:///c:/Users/TANAY/Downloads/Peachy/app.py))**:
+   - Hotkey trigger $\to$ records foreground HWND $\to$ `IDLE -> CAPTURING` $\to$ captures all screens $\to$ `CAPTURING -> SELECTING` $\to$ displays overlays.
+   - Hotkey activation while in `SELECTING` or `CAPTURING` is safely ignored.
+   - On cancel or timeout: overlays close, original foreground HWND restored, `SELECTING -> IDLE`.
+   - On confirmation: cropped `QImage` stored in memory, `SELECTING -> IDLE`.
+   - Debug switch: if `PEACHY_DEBUG_SAVE_CROP=1`, crop PNG is saved to `%TEMP%\peachy_crops\crop_<timestamp>.png` and path is logged.
+
+### Verified by Automated Tests (50/50 pytest unit tests passed)
+- `tests/test_geometry.py`: Rect normalization in all 4 directions, clamping with negative origins, DPR 1.0/1.25/1.5/2.0 conversions, crop box clamping, 8x8 threshold.
+- `tests/test_crop.py`: Synthetic color grid verification (Red, Green, Blue, Yellow quadrants) proving exact pixel-for-pixel accuracy on quadrant crops and multi-quadrant center crops.
+- `tests/test_selection_overlay.py`: Rejection of <8x8 selections, confirmation of $\ge 8\times 8$ selections, Esc cancel, right-click cancel, Backspace clearing, 60s inactivity timeout, foreground HWND restoration.
+- `tests/test_app.py`: Privacy redaction filter.
+- `tests/test_hotkey_manager.py`: Win32 hotkey registration, collision handling, pause/resume.
+- `tests/test_hotkey_parser.py`: Key parsing across modifiers, function keys, and symbols.
+- `tests/test_settings.py`: Settings round-trip, atomic writes, corruption recovery.
+- `tests/test_state_manager.py`: Transitions, rejection of invalid transitions, spam guard, cancel from SELECTING.
+
+### Verified by End-to-End Automated Scripts
+- [x] **`scripts/capture_check.py`**: Captures 2 monitors (100% and 125% DPI with negative coordinates) and saves sharp PNGs to temp.
+- [x] **`scripts/verify_day1.py`**: Full single-instance IPC, `WM_HOTKEY` registration and message reception passed.
+- [x] **`scripts/verify_day2.py`**:
+  - Live capture speed (16.3ms for 2 monitors).
+  - Multi-DPI physical-to-logical alignment.
+  - End-to-end hotkey dispatch $\to$ `IDLE -> CAPTURING -> SELECTING`.
+  - Spam guard verification: hotkey during `SELECTING` rejected without crashing or breaking state.
+  - Clean process termination.
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Run `python scripts/capture_check.py` and open the generated PNGs in `%TEMP%\peachy_captures`: confirm each matches its monitor, is sharp, and shows full desktop without blur.
+- [ ] Set `set PEACHY_DEBUG_SAVE_CROP=1` and run `python app.py`:
+  - Press `Ctrl+Shift+Space`: confirm screen freezes immediately, all screens dim by ~35%, cursor is crosshair.
+  - Drag a box in all 4 directions: verify the box is highlighted with a 2px pink border (`#F472B6`), pink tint, and a pill badge showing `{width} × {height}` in physical pixels.
+  - Release mouse on a valid selection: check `%TEMP%\peachy_crops` and verify the saved crop matches exactly what was boxed.
+- [ ] Press `Ctrl+Shift+Space` and immediately press `Esc`: verify overlays close on the first press and focus returns to your previous active window.
+- [ ] Press `Ctrl+Shift+Space` and right-click: verify overlays close immediately.
+- [ ] Press `Ctrl+Shift+Space` and single click without dragging: verify box disappears and nothing is saved.
+- [ ] Verify that no taskbar button appears while the overlays are visible.
 
 ### Known Bugs
 - None.

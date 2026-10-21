@@ -108,3 +108,11 @@ def test_reset_to_idle():
     # Calling when already IDLE is a no-op
     sm.reset_to_idle()
     assert sm.state == AppState.IDLE
+
+
+def test_cancel_from_selecting_returns_to_idle():
+    """Verify cancelling during SELECTING cleanly transitions to IDLE."""
+    sm = StateManager(initial_state=AppState.SELECTING)
+    assert sm.transition_to(AppState.IDLE) is True
+    assert sm.state == AppState.IDLE
+    assert sm.is_idle is True
