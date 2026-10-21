@@ -1,11 +1,12 @@
 """Official Google GenAI SDK provider for Peachy.
 
 Implements Gemini Flash multimodal queries with:
-- Client creation via official google-genai SDK
+- Direct client.models.generate_content() calls (no chat wrapper overhead)
+- AFC (Automatic Function Calling) explicitly disabled
 - Image optimization via Pillow (downscale long side > 2048 px, never upscale)
 - Secure runtime API key reading through get_gemini_api_key()
 - Strict error mapping to typed ProviderError exceptions
-- Multi-turn conversation history management
+- Manual multi-turn conversation history management
 """
 
 from __future__ import annotations
@@ -88,7 +89,11 @@ def prepare_image(image_bytes: bytes, max_long_side: int = MAX_IMAGE_LONG_SIDE) 
 
 
 class GeminiProvider(BaseAIProvider):
-    """Gemini multimodal provider utilizing the official google-genai SDK."""
+    """Gemini multimodal provider utilizing the official google-genai SDK.
+
+    Uses client.models.generate_content() directly with explicit AFC disabled,
+    rather than the chats wrapper, for lower latency and predictable behaviour.
+    """
 
     def __init__(
         self,
@@ -128,38 +133,44 @@ class GeminiProvider(BaseAIProvider):
     ) -> AnswerResult:
         """Submit a question and optional image to Gemini.
 
-        Maintains conversation history for follow-ups without resending image data.
+        Uses client.models.generate_content() directly with the full contents
+        list (history + current turn) for lower latency. AFC is disabled.
         """
         client = self._get_client()
         model_name = self.get_model_name()
 
-        # Build prompt parts
-        parts: List[Any] = []
+        # Build the current user turn's parts
+        user_parts: List[types.Part] = []
         if image_png:
             prep_bytes = prepare_image(image_png)
-            parts.append(types.Part.from_bytes(data=prep_bytes, mime_type="image/png"))
+            user_parts.append(types.Part.from_bytes(data=prep_bytes, mime_type="image/png"))
 
         q_text = question.strip() if question else ""
-        if q_text:
-            parts.append(q_text)
-        elif not parts:
-            # Empty question on an empty image
-            parts.append("Describe the image or screen.")
+        if not q_text:
+            q_text = "Explain this screen"
+        user_parts.append(types.Part.from_text(text=q_text))
 
+        # Build the full contents list: history + current user turn
+        contents: List[types.Content] = []
+        if history:
+            contents.extend(history)
+        contents.append(types.Content(role="user", parts=user_parts))
+
+        # Config: system instruction, timeout, AFC explicitly disabled
         config = types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
             http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True,
+            ),
         )
 
         try:
-            # Create or resume chat session
-            chat = client.chats.create(
+            response = client.models.generate_content(
                 model=model_name,
+                contents=contents,
                 config=config,
-                history=history or [],
             )
-
-            response = chat.send_message(message=parts)
 
             # Check for safety blocks
             if not response.candidates:
@@ -175,7 +186,14 @@ class GeminiProvider(BaseAIProvider):
             if not text or not text.strip():
                 raise EmptyResponseError()
 
-            return AnswerResult(text=text.strip(), history=chat.get_history())
+            # Build updated history: previous history + user turn + model turn
+            new_history = list(contents)
+            new_history.append(types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=text.strip())],
+            ))
+
+            return AnswerResult(text=text.strip(), history=new_history)
 
         except errors.APIError as err:
             code = getattr(err, "code", None)

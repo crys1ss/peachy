@@ -183,10 +183,11 @@
    - [scripts/list_models.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/list_models.py): Enumerates all Gemini models supporting content generation.
    - [scripts/smoke_gemini.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/smoke_gemini.py): Generates a synthetic "2 + 2 = ?" PNG, executes a real Gemini call, and verifies correct model output.
 
-### Verified by Automated Tests (65/65 pytest tests passed)
-- `tests/test_gemini_provider.py` (10 tests):
+### Verified by Automated Tests (66/66 pytest tests passed)
+- `tests/test_gemini_provider.py` (11 tests):
   - `test_missing_key_raises_missing_key_error`: Detects absent API key.
   - `test_request_contains_image_part_text_and_model_from_settings`: Validates SDK request payloads.
+  - `test_empty_question_defaults_to_explain_screen`: Verifies default prompt "Explain this screen".
   - `test_model_name_env_override`: Confirms `PEACHY_MODEL` env override.
   - `test_prepare_image_downscale_only`: Proves downscaling >2048px and preservation of <=2048px.
   - `test_sdk_exception_mapping_*`: Validates mapping for `InvalidKey`, `RateLimited`, `Timeout`, `Network`, and `Blocked`.

@@ -79,7 +79,7 @@ def calculate_popup_position(
 
 
 class AskView(QWidget):
-    """View 1: Displays crop thumbnail, question text field, and Send/Cancel buttons."""
+    """View 1: Displays crop thumbnail, question text field, Send/Cancel buttons, and Esc hint."""
 
     send_requested = Signal(str)
     cancel_requested = Signal()
@@ -88,7 +88,7 @@ class AskView(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         # Thumbnail
         self.thumbnail_label = QLabel()
@@ -99,8 +99,13 @@ class AskView(QWidget):
 
         # Question input field
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("Ask a question about this screenshot (or leave empty)...")
+        self.input_field.setPlaceholderText("Ask a question about this screenshot (or leave empty to explain)...")
         layout.addWidget(self.input_field)
+
+        # Hint label
+        self.hint_label = QLabel("Press Enter to send • Esc to cancel")
+        self.hint_label.setStyleSheet("color: #777; font-size: 11px;")
+        layout.addWidget(self.hint_label)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -116,6 +121,7 @@ class AskView(QWidget):
         # Connections
         self.send_btn.clicked.connect(self._on_send)
         self.cancel_btn.clicked.connect(self.cancel_requested.emit)
+        self.input_field.returnPressed.connect(self._on_send)
 
     def set_thumbnail(self, pixmap: QPixmap) -> None:
         """Set and scale crop thumbnail for preview."""
@@ -180,7 +186,7 @@ class ThinkingView(QWidget):
 
 
 class AnswerView(QWidget):
-    """View 3: Displays rendered markdown answer, copy, follow-up, and actions."""
+    """View 3: Displays question header, rendered markdown answer, copy, follow-up, and actions."""
 
     followup_requested = Signal(str)
     new_screenshot_requested = Signal()
@@ -192,16 +198,26 @@ class AnswerView(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        # Question header
+        self.question_header = QLabel()
+        self.question_header.setWordWrap(True)
+        font = self.question_header.font()
+        font.setBold(True)
+        font.setPointSize(10)
+        self.question_header.setFont(font)
+        self.question_header.setStyleSheet("color: #333; margin-bottom: 2px;")
+        layout.addWidget(self.question_header)
+
         # Top Action Bar
         top_bar = QHBoxLayout()
         self.copy_btn = QPushButton("Copy")
         self.new_screen_btn = QPushButton("New Screenshot")
-        self.close_btn = QPushButton("Close")
+        self.done_btn = QPushButton("Done")
 
         top_bar.addWidget(self.copy_btn)
         top_bar.addStretch()
         top_bar.addWidget(self.new_screen_btn)
-        top_bar.addWidget(self.close_btn)
+        top_bar.addWidget(self.done_btn)
         layout.addLayout(top_bar)
 
         # Markdown Answer Browser
@@ -223,11 +239,19 @@ class AnswerView(QWidget):
         # Connections
         self.copy_btn.clicked.connect(self._on_copy)
         self.send_btn.clicked.connect(self._on_followup)
+        self.followup_input.returnPressed.connect(self._on_followup)
         self.new_screen_btn.clicked.connect(self.new_screenshot_requested.emit)
-        self.close_btn.clicked.connect(self.close_requested.emit)
+        self.done_btn.clicked.connect(self.close_requested.emit)
 
-    def set_answer(self, markdown_text: str) -> None:
+    def set_answer(self, markdown_text: str, question: str = "") -> None:
+        if question:
+            self.question_header.setText(f"Q: {question}")
+            self.question_header.show()
+        else:
+            self.question_header.hide()
+
         self.browser.setMarkdown(markdown_text)
+        self.copy_btn.setText("Copy")
         self.followup_input.clear()
         self.send_btn.setEnabled(True)
         self.followup_input.setEnabled(True)
@@ -258,7 +282,7 @@ class AnswerView(QWidget):
 
 
 class ErrorView(QWidget):
-    """View 4: Displays error message with Retry and Close buttons."""
+    """View 4: Displays friendly error message with Retry and Cancel buttons."""
 
     retry_requested = Signal()
     close_requested = Signal()
@@ -276,16 +300,16 @@ class ErrorView(QWidget):
 
         btn_layout = QHBoxLayout()
         self.retry_btn = QPushButton("Retry")
-        self.close_btn = QPushButton("Close")
+        self.cancel_btn = QPushButton("Cancel")
 
         btn_layout.addStretch()
         btn_layout.addWidget(self.retry_btn)
-        btn_layout.addWidget(self.close_btn)
+        btn_layout.addWidget(self.cancel_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
         self.retry_btn.clicked.connect(self.retry_requested.emit)
-        self.close_btn.clicked.connect(self.close_requested.emit)
+        self.cancel_btn.clicked.connect(self.close_requested.emit)
 
     def set_error(self, message: str) -> None:
         self.error_label.setText(message)
@@ -354,9 +378,9 @@ class PeachyPopup(QWidget):
         self.show()
         self.raise_()
 
-    def show_answer(self, markdown_text: str) -> None:
-        """Switch to Answer view with the markdown response."""
-        self.answer_view.set_answer(markdown_text)
+    def show_answer(self, markdown_text: str, question: str = "") -> None:
+        """Switch to Answer view with the markdown response and question header."""
+        self.answer_view.set_answer(markdown_text, question=question)
         self.stack.setCurrentIndex(ViewIndex.ANSWER)
         self.show()
         self.raise_()

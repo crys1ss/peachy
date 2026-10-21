@@ -172,7 +172,8 @@ class AppController(QObject):
             logger.warning("send_question ignored: state is %s (must be ASKING)", self.state_manager.state.value)
             return
 
-        self._start_ai_request(question=question, image_png=self._current_image_bytes, is_followup=False)
+        prompt = question.strip() if question and question.strip() else "Explain this screen"
+        self._start_ai_request(question=prompt, image_png=self._current_image_bytes, is_followup=False)
 
     def on_send_followup(self, question: str) -> None:
         """User sent follow-up question from the Answer view."""
@@ -248,7 +249,7 @@ class AppController(QObject):
 
         # Transition THINKING -> ANSWERING
         self.state_manager.transition_to(AppState.ANSWERING)
-        self.popup.show_answer(result.text)
+        self.popup.show_answer(result.text, question=self._last_question)
         logger.info("AI request %d answered successfully (%d history turns)", request_id, len(result.history))
 
     def _on_worker_error(self, request_id: int, error: ProviderError) -> None:

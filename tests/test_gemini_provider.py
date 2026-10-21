@@ -45,37 +45,56 @@ def test_missing_key_raises_missing_key_error():
 def test_request_contains_image_part_text_and_model_from_settings():
     """Verify request packages image part, text part, system instruction, and model."""
     mock_client = MagicMock()
-    mock_chat = MagicMock()
-    mock_client.chats.create.return_value = mock_chat
 
     mock_response = MagicMock()
     mock_candidate = MagicMock()
     mock_candidate.finish_reason = None
     mock_response.candidates = [mock_candidate]
     mock_response.text = "Answer from mock model"
-    mock_chat.send_message.return_value = mock_response
-    mock_chat.get_history.return_value = [{"role": "user"}, {"role": "model"}]
+    mock_client.models.generate_content.return_value = mock_response
 
     provider = GeminiProvider(model="gemini-3.8-flash", api_key="fake-key-for-test", client=mock_client)
     img_bytes = create_dummy_png(120, 80)
 
     result = provider.ask(image_png=img_bytes, question="Explain this diagram")
 
-    # Verify model and system instruction passed to client.chats.create
-    mock_client.chats.create.assert_called_once()
-    create_kwargs = mock_client.chats.create.call_args.kwargs
-    assert create_kwargs["model"] == "gemini-3.8-flash"
-    assert create_kwargs["config"].system_instruction == SYSTEM_INSTRUCTION
+    # Verify generate_content was called with model, contents, config
+    mock_client.models.generate_content.assert_called_once()
+    call_kwargs = mock_client.models.generate_content.call_args.kwargs
+    assert call_kwargs["model"] == "gemini-3.8-flash"
+    assert call_kwargs["config"].system_instruction == SYSTEM_INSTRUCTION
+    # AFC must be disabled
+    assert call_kwargs["config"].automatic_function_calling.disable is True
 
-    # Verify send_message received both image part and text part
-    mock_chat.send_message.assert_called_once()
-    sent_parts = mock_chat.send_message.call_args.kwargs["message"]
-    assert len(sent_parts) == 2
-    assert isinstance(sent_parts[0], types.Part)
-    assert sent_parts[1] == "Explain this diagram"
+    # Verify contents list: single user turn with image + text
+    contents = call_kwargs["contents"]
+    assert len(contents) == 1
+    user_turn = contents[0]
+    assert user_turn.role == "user"
+    assert len(user_turn.parts) == 2
+    assert user_turn.parts[1].text == "Explain this diagram"
 
     assert result.text == "Answer from mock model"
+    # History should contain user turn + model turn = 2
     assert len(result.history) == 2
+
+
+def test_empty_question_defaults_to_explain_screen():
+    """Verify empty or whitespace question defaults to 'Explain this screen'."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_candidate = MagicMock()
+    mock_candidate.finish_reason = None
+    mock_response.candidates = [mock_candidate]
+    mock_response.text = "Screen explanation"
+    mock_client.models.generate_content.return_value = mock_response
+
+    provider = GeminiProvider(api_key="fake-key", client=mock_client)
+    provider.ask(image_png=create_dummy_png(50, 50), question="   ")
+
+    call_kwargs = mock_client.models.generate_content.call_args.kwargs
+    contents = call_kwargs["contents"]
+    assert contents[0].parts[1].text == "Explain this screen"
 
 
 def test_model_name_env_override(monkeypatch):
@@ -101,7 +120,7 @@ def test_prepare_image_downscale_only():
 def test_sdk_exception_mapping_invalid_key():
     """Verify 400 with invalid key or 401/403 maps to InvalidKeyError."""
     mock_client = MagicMock()
-    mock_client.chats.create.side_effect = errors.APIError(
+    mock_client.models.generate_content.side_effect = errors.APIError(
         code=400, response_json={"error": {"message": "API key not valid"}}
     )
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
@@ -113,7 +132,7 @@ def test_sdk_exception_mapping_invalid_key():
 def test_sdk_exception_mapping_rate_limited():
     """Verify 429 maps to RateLimitedError."""
     mock_client = MagicMock()
-    mock_client.chats.create.side_effect = errors.APIError(
+    mock_client.models.generate_content.side_effect = errors.APIError(
         code=429, response_json={"error": {"message": "Resource exhausted"}}
     )
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
@@ -125,7 +144,7 @@ def test_sdk_exception_mapping_rate_limited():
 def test_sdk_exception_mapping_timeout():
     """Verify 504 / timeout maps to TimeoutError."""
     mock_client = MagicMock()
-    mock_client.chats.create.side_effect = errors.APIError(
+    mock_client.models.generate_content.side_effect = errors.APIError(
         code=504, response_json={"error": {"message": "Deadline exceeded"}}
     )
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
@@ -137,7 +156,7 @@ def test_sdk_exception_mapping_timeout():
 def test_sdk_exception_mapping_network_error():
     """Verify 503 / network errors map to NetworkError."""
     mock_client = MagicMock()
-    mock_client.chats.create.side_effect = errors.APIError(
+    mock_client.models.generate_content.side_effect = errors.APIError(
         code=503, response_json={"error": {"message": "Service unavailable"}}
     )
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
@@ -149,14 +168,12 @@ def test_sdk_exception_mapping_network_error():
 def test_sdk_blocked_safety_error():
     """Verify finish_reason = SAFETY maps to BlockedError."""
     mock_client = MagicMock()
-    mock_chat = MagicMock()
-    mock_client.chats.create.return_value = mock_chat
 
     mock_response = MagicMock()
     mock_candidate = MagicMock()
     mock_candidate.finish_reason = types.FinishReason.SAFETY
     mock_response.candidates = [mock_candidate]
-    mock_chat.send_message.return_value = mock_response
+    mock_client.models.generate_content.return_value = mock_response
 
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
     with pytest.raises(BlockedError):
@@ -166,15 +183,13 @@ def test_sdk_blocked_safety_error():
 def test_empty_response_error():
     """Verify empty text response maps to EmptyResponseError."""
     mock_client = MagicMock()
-    mock_chat = MagicMock()
-    mock_client.chats.create.return_value = mock_chat
 
     mock_response = MagicMock()
     mock_candidate = MagicMock()
     mock_candidate.finish_reason = None
     mock_response.candidates = [mock_candidate]
     mock_response.text = "   "
-    mock_chat.send_message.return_value = mock_response
+    mock_client.models.generate_content.return_value = mock_response
 
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
     with pytest.raises(EmptyResponseError):

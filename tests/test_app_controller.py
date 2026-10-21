@@ -125,6 +125,7 @@ def test_full_happy_path(controller_setup, qtbot):
 
     assert popup.stack.currentIndex() == ViewIndex.ANSWER
     assert "Fake response text" in popup.answer_view.browser.toPlainText()
+    assert "What is this red rectangle?" in popup.answer_view.question_header.text()
     assert provider.last_image_png is not None
     assert provider.last_question == "What is this red rectangle?"
 
