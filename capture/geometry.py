@@ -147,3 +147,21 @@ def extract_crop(image, crop_box: Tuple[int, int, int, int]):
     if cw <= 0 or ch <= 0:
         return type(image)()
     return image.copy(cx, cy, cw, ch)
+
+
+def clamp_popup_to_screen(
+    x: int, y: int, w: int, h: int, screen_x: int, screen_y: int, screen_w: int, screen_h: int
+) -> Tuple[int, int]:
+    """Pure mathematical function to clamp a popup window completely within screen boundaries.
+
+    Ensures top-left (x, y) keeps the entire window (w x h) visible within the screen
+    work area [screen_x, screen_x + screen_w] x [screen_y, screen_y + screen_h].
+    Handles multiple monitors and negative coordinate offsets.
+    """
+    max_x = screen_x + screen_w - w
+    max_y = screen_y + screen_h - h
+
+    clamped_x = max(screen_x, min(x, max_x)) if max_x >= screen_x else screen_x
+    clamped_y = max(screen_y, min(y, max_y)) if max_y >= screen_y else screen_y
+
+    return clamped_x, clamped_y

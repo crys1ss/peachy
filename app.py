@@ -126,7 +126,7 @@ class PeachyApp(QObject):
         self.overlay_manager = OverlayManager()
 
         # 6. Peachy Popup Window
-        self.popup = PeachyPopup()
+        self.popup = PeachyPopup(pinned=self.settings.pinned, answer_length=self.settings.answer_length)
 
         # 7. App Controller
         self.controller = AppController(

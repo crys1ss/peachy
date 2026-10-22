@@ -64,6 +64,7 @@ class AppController(QObject):
         self._current_history: List[Any] = []
         self._last_question: str = ""
         self._saved_foreground_hwnd: int = 0
+        self._is_new_screenshot_flow: bool = False
 
         # Hard timeout timer (45s)
         self._hard_timeout_timer = QTimer(self)
@@ -88,6 +89,34 @@ class AppController(QObject):
         self.popup.retry_requested.connect(self.on_retry)
         self.popup.new_screenshot_requested.connect(self.on_new_screenshot)
         self.popup.cancelled.connect(self.on_popup_cancelled)
+        if hasattr(self.popup, "length_changed"):
+            self.popup.length_changed.connect(self._on_length_changed)
+
+        # Monitor resolution & multi-screen topology listeners
+        q_app = QGuiApplication.instance()
+        if q_app:
+            q_app.screenAdded.connect(self._on_screen_topology_changed)
+            q_app.screenRemoved.connect(self._on_screen_topology_changed)
+            for sc in q_app.screens():
+                sc.availableGeometryChanged.connect(self._on_screen_topology_changed)
+
+    def _on_length_changed(self, length: str) -> None:
+        """Handle length chip toggle ("short" / "detailed")."""
+        self.settings.answer_length = length
+        logger.info("Answer length mode set to: %s", length)
+
+    def _on_screen_topology_changed(self, *args: Any) -> None:
+        """Re-clamp popup position when screens or geometries change."""
+        if self.popup.isVisible():
+            screen = QGuiApplication.screenAt(self.popup.pos()) or QGuiApplication.primaryScreen()
+            if screen:
+                ag = screen.availableGeometry()
+                from capture.geometry import clamp_popup_to_screen
+                cx, cy = clamp_popup_to_screen(
+                    self.popup.x(), self.popup.y(), self.popup.width(), self.popup.height(),
+                    ag.x(), ag.y(), ag.width(), ag.height()
+                )
+                self.popup.move(cx, cy)
 
     def on_activated(self) -> None:
         """Triggered by global hotkey or tray 'Ask Peachy' menu item."""
@@ -149,8 +178,10 @@ class AppController(QObject):
         crop.save(buffer, "PNG")
         self._current_image_bytes = bytes(byte_array.data())
 
-        # Reset conversation history for new screenshot
-        self._current_history = []
+        # Reset conversation history only if this is a fresh capture, not a New Screenshot flow
+        if not self._is_new_screenshot_flow:
+            self._current_history = []
+        self._is_new_screenshot_flow = False
         self._last_question = ""
 
         # Transition SELECTING -> ASKING
@@ -285,10 +316,13 @@ class AppController(QObject):
         self.popup.show_error(TimeoutError.DEFAULT_MESSAGE)
 
     def on_new_screenshot(self) -> None:
-        """User clicked 'New Screenshot' in the Answer view."""
+        """User clicked 'New Screenshot' in the Answer view.
+
+        Preserves conversation history to continue multi-screenshot chat.
+        """
         self.popup.hide()
         self._current_image_bytes = None
-        self._current_history = []
+        self._is_new_screenshot_flow = True
         self._last_question = ""
 
         # Transition ANSWERING -> IDLE -> CAPTURING
@@ -311,9 +345,12 @@ class AppController(QObject):
 
         # 2. Hide popup and free resources
         self.popup.hide()
+        if hasattr(self.popup, "pill"):
+            self.popup.pill.hide()
         self._current_image_bytes = None
         self._current_history.clear()
         self._last_question = ""
+        self._is_new_screenshot_flow = False
 
         # 3. Restore foreground focus
         if self._saved_foreground_hwnd:

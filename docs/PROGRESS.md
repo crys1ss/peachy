@@ -7,7 +7,7 @@
 | **Day 1** (Thu 22 Oct) | Architecture, desktop shell, global hotkey, state machine | **Done & Verified** |
 | **Day 2** (Fri 23 Oct) | Screen capture, frozen selection overlay, multi-monitor & DPI | **Done & Verified** |
 | **Day 3** (Sat 24 Oct) | Gemini provider, plain popup views, workers, end-to-end MVP | **Done & Verified** |
-| **Day 4** (Sun 25 Oct) | Cute popup styling, focus handling, drag, pin, animations | Pending |
+| **Day 4** (Sun 25 Oct) | Cute popup styling, focus handling, drag, pin, animations | **Done & Verified** |
 | **Day 5** (Mon 26 Oct) | Settings window, keyring, double-tap C hook, hardening pass | Pending |
 | **Day 6** (Tue 27 Oct) | PyInstaller build, onedir packaging, README, acceptance | Pending |
 
@@ -232,4 +232,77 @@ SMOKE TEST SUCCESSFUL!
 
 ### Known Bugs
 - None.
+
+---
+
+## Day 4 Summary (Sunday 25 Oct)
+
+### What Works & Is Done
+1. **Design Tokens & Dark Mode ([ui/theme.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/theme.py))**:
+   - Centralized theme tokens: Accent `#F472B6`, hover `#EC4899`, soft surface `#FFF1F6`, card `#FFFFFF`, text `#1F1F23`, muted `#6B6B76`, border `#F9C9DC`. Dark surface `#1E1A1D`, card `#2A2328`, text `#F5F0F3`.
+   - Windows light/dark mode registry detection (`AppsUseLightTheme`) with fallback to Qt style hints.
+   - Segoe UI Variable typography hierarchy (15px semibold title, 13-14px body).
+2. **Sparkle Mascot Vector Asset ([resources/sparkle.svg](file:///c:/Users/TANAY/Downloads/Peachy/resources/sparkle.svg))**:
+   - Clean 4-point sparkle star with companion satellite dot rendered via `QSvgRenderer` for crispness across all DPR scales.
+3. **Card Shell with Soft Drop Shadow ([ui/peachy_popup.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/peachy_popup.py))**:
+   - Frameless, translucent background (`Qt.WA_TranslucentBackground`), `Qt.Tool` (no taskbar item).
+   - Outer layout provides 12px padding for soft multi-pass gaussian card drop shadow (`QGraphicsDropShadowEffect`).
+   - 16px radius on card container.
+4. **Header & Window Controls**:
+   - Draggable by header, strictly clamped inside available monitor workspace (`clamp_popup_to_screen`).
+   - Action buttons:
+     - **Pin**: Toggles `WindowStaysOnTopHint` (pinned ON by default).
+     - **Minimize**: Collapses main card into a small floating pink pill companion widget (`MinimizedPillWidget`) with sparkle icon + `"peachy"`. Clicking the pill expands it back into the main card.
+     - **Close (Esc)**: Clears conversation history, closes popup, restores foreground window focus, and returns to `IDLE`.
+   - **Length Chip**: Toggleable "Short" / "Detailed" chip that switches answer length instruction.
+5. **Polite Focus Policy (`WA_ShowWithoutActivating`)**:
+   - **AskView**: Accepts typing focus automatically upon activation so user can type immediately.
+   - **AnswerView**: Renders using `Qt.WA_ShowWithoutActivating`, ensuring Chrome, VS Code, or Notepad never loses typing focus.
+6. **Views & Animations**:
+   - **AskView**: Dashed pink border (`2px dashed #F472B6`) around thumbnail preview, placeholder `"Ask about this..."`, hint `"Enter to send, Esc to cancel"`.
+   - **ThinkingView**: Three bouncing pink dots (`BouncingDotsWidget`). Strict timer lifecycle: animation timer only runs while visible, stopped while hidden.
+   - **AnswerView**: First-answer title header `"Here's the answer!"`, monospace code blocks with soft pink background, Copy button with 1.5s `"Copied!"` timed toast, rounded pill follow-up input bar.
+   - **ErrorView**: Friendly message, Retry button, Cancel button.
+7. **Multi-Screenshot Conversational Flow ([core/app_controller.py](file:///c:/Users/TANAY/Downloads/Peachy/core/app_controller.py))**:
+   - Fixed: `on_new_screenshot()` now preserves `_current_history` while transitioning to capture, allowing continuous chat across multiple screenshots.
+   - Topology listeners: Re-clamps popup when screens or geometries change.
+
+### Verified by Automated Tests (80/80 pytest tests passed)
+- `tests/test_theme.py` (4 tests):
+  - `test_theme_tokens_contrast_and_palette`: Light/dark token definitions.
+  - `test_get_theme_override`: Forced light and dark mode overrides.
+  - `test_font_family_hierarchy`: Font family preferences.
+  - `test_card_stylesheet_generation`: QSS token presence.
+- `tests/test_peachy_popup.py` (9 tests):
+  - `test_pure_function_clamp_popup_to_screen`: Clamping with positive and negative screen origins.
+  - `test_calculate_popup_position_adjacent`: Right-first and fallback left/below placement.
+  - `test_popup_frameless_and_pin_toggle`: Frameless, Tool, and stay-on-top toggle.
+  - `test_view_switching_lifecycle`: Seamless Ask -> Thinking -> Answer -> Error transitions.
+  - `test_bouncing_dots_timer_strictly_stopped_when_hidden`: Strict zero-timer leak when hidden.
+  - `test_copy_button_clipboard_and_timed_toast`: Clipboard write and 1.5s text revert.
+  - `test_minimize_and_expand_pill`: Minimize to floating pill and click-to-expand.
+  - `test_length_chip_toggle`: Chip toggle between "Short" and "Detailed".
+  - `test_polite_focus_answer_view_does_not_steal_focus`: `WA_ShowWithoutActivating` verification.
+- `tests/test_app_controller.py`:
+  - `test_new_screenshot_preserves_conversation_history`: Verified multi-screenshot conversation context retention.
+- Prior Day Tests (66 tests): All Day 1-3 tests continue passing without regression.
+
+### Verified by Screenshot Artifacts (`scripts/generate_screens.py`)
+Generated 5 preview screenshots into `docs/screens/`:
+- `docs/screens/ask_view.png`
+- `docs/screens/thinking_view.png`
+- `docs/screens/answer_view.png`
+- `docs/screens/error_view.png`
+- `docs/screens/minimized_pill.png`
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Inspect generated images in `docs/screens/`: Confirm they match the cute white card, soft pink, sparkle aesthetic.
+- [ ] Run `python app.py`:
+  - Box a question, receive answer: Click into Chrome and type — verify Chrome keeps focus while popup stays visible.
+  - Toggle Pin button: Unpinned popup drops behind other windows when clicked outside; pinned popup stays on top.
+  - Drag popup by its header to screen edge: Confirm it stops at the screen boundary and never slips off-screen.
+  - Click Minimize button (`—`): Verify it collapses to the cute pink pill; click pill to restore.
+  - Click "New Screenshot": Verify screen freezes for a new crop and continues the previous conversation context.
+  - Windows Dark Mode: Confirm colors adapt smoothly to dark mode.
+
 

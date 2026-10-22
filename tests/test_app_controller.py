@@ -189,14 +189,14 @@ def test_double_send_blocked_while_thinking(controller_setup, qtbot):
 
     controller.on_send_question("Initial request")
     assert state_mgr.state == AppState.THINKING
-    initial_call_count = provider.call_count
+    qtbot.waitUntil(lambda: provider.call_count == 1, timeout=500)
 
     # Attempt to send another question while still THINKING
     controller.on_send_question("Second request")
     controller.on_send_followup("Third request")
 
     # Call count must not increment because state is THINKING
-    assert provider.call_count == initial_call_count
+    assert provider.call_count == 1
     controller.on_popup_cancelled()
 
 
@@ -235,3 +235,41 @@ def test_hard_timeout_fires_and_shows_error(controller_setup, qtbot):
     assert popup.stack.currentIndex() == ViewIndex.ERROR
     assert "timed out" in popup.error_view.error_label.text()
     controller.on_popup_cancelled()
+
+
+def test_new_screenshot_preserves_conversation_history(controller_setup, qtbot):
+    """Verify 'New Screenshot' keeps previous conversation history while Close resets it."""
+    controller, provider, popup, state_mgr = controller_setup
+    from tests.test_selection_overlay import create_mock_monitor
+    mock_mon = create_mock_monitor()
+
+    # 1. First capture and answer
+    with patch("core.win32.get_foreground_window", return_value=100), \
+         patch("core.app_controller.capture_all_monitors", return_value=[mock_mon]):
+        controller.on_activated()
+
+    img1 = QImage(100, 100, QImage.Format.Format_RGB32)
+    controller.on_crop_confirmed(img1)
+    controller.on_send_question("First question")
+    qtbot.waitUntil(lambda: state_mgr.state == AppState.ANSWERING, timeout=2000)
+
+    assert len(controller._current_history) == 2
+
+    # 2. Click 'New Screenshot'
+    with patch("core.win32.get_foreground_window", return_value=100), \
+         patch("core.app_controller.capture_all_monitors", return_value=[mock_mon]):
+        controller.on_new_screenshot()
+
+    assert state_mgr.state == AppState.SELECTING
+    # History must be preserved!
+    assert len(controller._current_history) == 2
+
+    # 3. Confirm second crop
+    img2 = QImage(120, 120, QImage.Format.Format_RGB32)
+    controller.on_crop_confirmed(img2)
+    assert len(controller._current_history) == 2
+
+    # 4. Cancel / Close resets history
+    controller.on_popup_cancelled()
+    assert len(controller._current_history) == 0
+    assert state_mgr.state == AppState.IDLE

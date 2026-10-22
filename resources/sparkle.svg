@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- 4-point sparkle star -->
+  <path d="M12 2 C12 7.5 7.5 12 2 12 C7.5 12 12 16.5 12 22 C12 16.5 16.5 12 22 12 C16.5 12 12 7.5 12 2 Z" fill="#F472B6" />
+  <!-- Accent satellite dot -->
+  <circle cx="20.5" cy="4.5" r="1.5" fill="#F472B6" />
+</svg>
