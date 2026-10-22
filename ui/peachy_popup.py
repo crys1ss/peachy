@@ -17,6 +17,7 @@ from enum import IntEnum
 import logging
 import math
 from pathlib import Path
+import sys
 from typing import Optional
 
 from PySide6.QtCore import (
@@ -63,8 +64,23 @@ from ui.theme import ThemeTokens, get_app_font, get_card_stylesheet, get_theme
 
 logger = logging.getLogger(__name__)
 
+
+def get_resource_path(relative_name: str) -> Path:
+    """Resolve resource file supporting both source execution and PyInstaller frozen bundle."""
+    if getattr(sys, "frozen", False):
+        base_dir = Path(getattr(sys, "_MEIPASS", sys.executable)).resolve()
+        candidate = base_dir / "resources" / relative_name
+        if candidate.exists():
+            return candidate
+        exe_dir = Path(sys.executable).resolve().parent
+        candidate_exe = exe_dir / "resources" / relative_name
+        if candidate_exe.exists():
+            return candidate_exe
+    return Path(__file__).resolve().parent.parent / "resources" / relative_name
+
+
 RESOURCES_DIR = Path(__file__).resolve().parent.parent / "resources"
-SPARKLE_SVG_PATH = RESOURCES_DIR / "sparkle.svg"
+SPARKLE_SVG_PATH = get_resource_path("sparkle.svg")
 
 
 class ViewIndex(IntEnum):

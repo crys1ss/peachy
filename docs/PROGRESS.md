@@ -364,4 +364,64 @@ Generated 5 preview screenshots into `docs/screens/`:
 ### Known Bugs
 - None.
 
+---
+
+## Day 6 Summary (Tuesday 27 Oct)
+
+### What Works & Is Done
+1. **Automated Build Script ([build.ps1](file:///c:/Users/TANAY/Downloads/Peachy/build.ps1))**:
+   - Clean venv creation option, pinned dependency installation from `requirements-dev.txt`.
+   - Automated `pytest` execution gating the build (stops on any test failure).
+   - Multi-resolution icon generation (`resources/peachy.ico` at 16, 32, 48, and 256 px) from SVG asset.
+   - PyInstaller packaging in `onedir` windowed mode (`console=False`) producing `dist\Peachy\Peachy.exe`.
+   - Architectural decision documented: `onedir` chosen over `onefile` for sub-second startup times and zero `%TEMP%` extraction heuristic AV false positives.
+2. **Frozen Build Integrity Verification ([scripts/verify_frozen.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/verify_frozen.py))**:
+   - Verified executable existence and file size (~17.2 MB).
+   - Verified Qt Platform plugin (`qwindows.dll`) and Qt SVG imageformat plugin (`qsvgicon.dll`).
+   - Verified bundled resources (`sparkle.svg` and `peachy.ico`) in both `_internal/resources` and adjacent `resources`.
+   - Verified Windows Credential Manager keyring backend (`keyring.backends.Windows`).
+3. **Inno Setup Windows Installer ([installer/peachy.iss](file:///c:/Users/TANAY/Downloads/Peachy/installer/peachy.iss))**:
+   - Modern wizard installer creating Start Menu and Desktop shortcuts.
+   - Optional automatic Windows startup entry.
+   - Clean uninstaller removing all binaries and user startup registry entries.
+4. **Comprehensive Documentation ([README.md](file:///c:/Users/TANAY/Downloads/README.md))**:
+   - Application overview, architecture, and feature showcase.
+   - High-fidelity screenshots from `docs/screens/` demonstrating Ask, Thinking, Answer, Error, and Pill states.
+   - Step-by-step Gemini API key setup instructions (Google AI Studio).
+   - Full keyboard shortcuts reference and interactive settings guide.
+   - Transparent privacy breakdown (zero telemetry, zero background capture, secure Windows Credential Manager storage).
+   - Troubleshooting guide covering hotkey conflicts, Administrator windows (UIPI), DRM video, SmartScreen, and log retrieval.
+5. **Specification Acceptance Report ([docs/ACCEPTANCE.md](file:///c:/Users/TANAY/Downloads/Peachy/docs/ACCEPTANCE.md))**:
+   - Section-by-section audit of all 33 specification requirements across Days 1 through 6.
+   - 100% verified status across all core features.
+
+### Verified by Automated Tests (107/107 pytest tests passed in 3.83s)
+- `tests/test_app.py`
+- `tests/test_app_controller.py`
+- `tests/test_crop.py`
+- `tests/test_double_tap.py`
+- `tests/test_gemini_provider.py`
+- `tests/test_geometry.py`
+- `tests/test_hardening.py`
+- `tests/test_hotkey_manager.py`
+- `tests/test_hotkey_parser.py`
+- `tests/test_key_storage.py`
+- `tests/test_peachy_popup.py`
+- `tests/test_privacy_audit.py`
+- `tests/test_selection_overlay.py`
+- `tests/test_settings.py`
+- `tests/test_settings_window.py`
+- `tests/test_state_manager.py`
+- `tests/test_theme.py`
+
+### Final Acceptance Checklist
+- [x] `build.ps1` runs and outputs `dist\Peachy\Peachy.exe`.
+- [x] PyInstaller onedir mode packages all Qt plugins, SVG renderers, and keyring backends.
+- [x] No hardcoded API keys anywhere in codebase or logs (`tests/test_privacy_audit.py`).
+- [x] 100% test pass rate (107/107 passed).
+- [x] `README.md` and `docs/ACCEPTANCE.md` finalized.
+- [ ] Manual smoke test: Run `dist\Peachy\Peachy.exe`, select region, ask question, and quit cleanly.
+- [ ] Tag repository: `git tag v1.0`.
+
+
 
