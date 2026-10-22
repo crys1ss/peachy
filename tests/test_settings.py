@@ -11,7 +11,7 @@ def test_settings_defaults():
     """Verify default setting values."""
     s = Settings()
     assert s.hotkey == "Ctrl+Shift+Space"
-    assert s.model == "gemini-3.8-flash"
+    assert s.model == "gemini-3.5-flash"
     assert s.pinned is True
     assert s.double_tap_enabled is False
     assert s.double_tap_interval_ms == 280
