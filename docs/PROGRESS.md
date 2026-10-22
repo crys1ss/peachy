@@ -423,5 +423,80 @@ Generated 5 preview screenshots into `docs/screens/`:
 - [ ] Manual smoke test: Run `dist\Peachy\Peachy.exe`, select region, ask question, and quit cleanly.
 - [ ] Tag repository: `git tag v1.0`.
 
+---
+
+## Freehand Selection Update
+
+### What Works & Is Done
+1. **Dual Selection Modes**:
+   - `Freehand` mode added as new default; legacy `Rectangle` mode preserved with 100% backwards compatibility.
+   - `Tab` key toggles between Freehand and Rectangle during selection across all monitor overlays.
+   - Top-centered rounded pill badge on each overlay displays active mode and controls:
+     - Freehand: `"Draw around what you want. Esc cancel, Tab switch mode, Backspace clear."`
+     - Rectangle: `"Drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."`
+2. **Smooth Live Drawing & Optimization**:
+   - 3 px smooth pink line (`#F472B6`, round caps and joins) rendered with `QPainterPath`.
+   - Points captured in physical pixels with $\ge 2.0$ px Euclidean distance filtering.
+   - Zero image copies per mouse move; dirty rectangle invalidation updates only active stroke segments.
+   - Auto-closes stroke on release (last point to start point) and draws light pink tint (`#F472B6` at 35 alpha).
+3. **Multi-Stroke Union (`Shift`)**:
+   - Holding `Shift` on release keeps the selection open and unions additional strokes.
+   - `Enter` confirms the union of shapes; `Backspace` clears all strokes; `Esc` cancels.
+4. **Degenerate Stroke Rejection**:
+   - Discards single clicks, straight lines, bounding boxes $< 8 \times 8$ physical px, and shapes with polygon area $< 64$ sq px.
+5. **Exact Masking & Crop Output**:
+   - Bounding box extracted from original frozen image.
+   - Setting `"outside_shape"`:
+     - `"blank"` (default): generates physical Pillow mask dilated by ~4 px (`ImageFilter.MaxFilter(9)`), composites over pure white `(255, 255, 255)`, and outputs RGB `QImage` (no alpha channel).
+     - `"keep"`: returns plain bounding box crop.
+   - Ramer-Douglas-Peucker (RDP) polyline simplification with pinned extreme vertices, strictly preserving the bounding box.
+6. **Pure Geometry Functions ([capture/geometry.py](file:///c:/Users/TANAY/Downloads/Peachy/capture/geometry.py))**:
+   - Isolated widget-free math: `add_point_if_far_enough`, `close_path`, `polygon_bounding_box`, `union_bounding_boxes`, `polygon_area`, `is_straight_line`, `is_degenerate_stroke`, `rdp_simplify`, `build_polygon_mask`, and `crop_freehand`.
+7. **Settings UI & Persistence**:
+   - Added `selection_mode` (`"freehand"` / `"rectangle"`) and `outside_shape` (`"blank"` / `"keep"`) to `Settings` in [config/settings.py](file:///c:/Users/TANAY/Downloads/Peachy/config/settings.py).
+   - Added "Selection & Capture" section to [ui/settings_window.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/settings_window.py) with radio controls for mode and outside shape.
+
+### Verified by Automated Tests (128/128 pytest tests passed in 3.13s)
+- `tests/test_geometry.py`:
+  - `test_add_point_if_far_enough_filtering`: Point filtering at 2.0 px Euclidean distance.
+  - `test_close_path`: Auto-connecting endpoints.
+  - `test_polygon_bounding_box_directions_and_negative_origins`: Direction-agnostic boxes and negative monitor origins.
+  - `test_polygon_bounding_box_across_dprs`: DPR 1.0, 1.25, 1.5, 2.0 scaling.
+  - `test_polygon_area_shoelace`: Shoelace area calculation.
+  - `test_is_straight_line`: Collinear straight line detection.
+  - `test_degenerate_strokes_rejected`: 1 point, straight line, tiny box, tiny area.
+  - `test_rdp_simplify_preserves_bounding_box_and_reduces_points`: Point reduction with guaranteed 100% bounding box preservation.
+  - `test_union_bounding_boxes`: Multi-stroke bounding box union.
+- `tests/test_crop.py`:
+  - `test_crop_freehand_synthetic_mask_blank_and_keep`: Synthetic 4-color grid testing inside pixels preserved, outside pixels pure white (no alpha), and plain box in keep mode.
+  - `test_crop_freehand_two_strokes_combine_into_one_union_box_and_mask`: Multi-stroke union mask validation.
+- `tests/test_selection_overlay.py`:
+  - `test_default_mode_is_freehand_and_tab_toggles`: Freehand default, Tab toggling.
+  - `test_freehand_single_click_ignored`: Single click rejected.
+  - `test_freehand_straight_line_ignored`: Straight line rejected.
+  - `test_freehand_valid_stroke_confirmed`: Closed loop confirms and crops.
+  - `test_freehand_shift_multi_stroke_union_and_enter`: Multi-stroke Shift union and Enter confirm.
+  - `test_freehand_backspace_clears_strokes`: Backspace stroke clearing.
+  - `test_valid_selection_confirmed` & `test_tiny_selection_rejected`: Rectangle mode backwards compatibility.
+- `tests/test_app_controller.py`:
+  - `test_hotkey_pressed_during_selecting_is_ignored`: Activation while in SELECTING ignored.
+- `tests/test_settings.py` & `tests/test_settings_window.py`:
+  - New selection settings fields defaults, persistence, and UI control interactions.
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Run `python app.py`: Press `Ctrl+Shift+Space`:
+  - Confirm top hint chip says: `"Draw around what you want. Esc cancel, Tab switch mode, Backspace clear."`
+  - Draw a freehand loop: confirm smooth 3 px pink line with round caps renders without latency.
+  - Release mouse: confirm loop closes automatically with light pink tint inside, unfreezes screen, and Ask popup appears.
+- [ ] Press `Ctrl+Shift+Space`, press `Tab`:
+  - Confirm top hint chip switches to: `"Drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."`
+  - Drag a box: confirm rectangle selection functions normally.
+  - Press `Tab` again: confirm it switches back to Freehand mode.
+- [ ] Multi-Stroke: Press `Ctrl+Shift+Space`, draw shape 1, hold `Shift` on release (selection stays open). Draw shape 2 on same screen. Press `Enter`: confirm union of both shapes is captured.
+- [ ] In Settings, switch "Outside shape" to "Keep", draw a freehand shape: confirm entire bounding box is preserved without white blanking.
+
+### Known Bugs
+- None.
+
 
 

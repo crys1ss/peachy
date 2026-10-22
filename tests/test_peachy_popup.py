@@ -196,3 +196,17 @@ def test_polite_focus_answer_view_does_not_steal_focus(qtbot):
 
     popup.show_answer("Polite answer text")
     assert popup.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+
+def test_set_answer_length(qtbot):
+    """Verify set_answer_length sets internal mode and chip text."""
+    popup = PeachyPopup(answer_length="short")
+    qtbot.addWidget(popup)
+
+    popup.set_answer_length("detailed")
+    assert popup._answer_length == "detailed"
+    assert popup.chip_btn.text() == "Detailed"
+
+    popup.set_answer_length("short")
+    assert popup._answer_length == "short"
+    assert popup.chip_btn.text() == "Short"

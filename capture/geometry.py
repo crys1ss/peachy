@@ -6,7 +6,7 @@ and drag directions.
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Any, Tuple
 
 
 def normalize_rect(x1: int, y1: int, x2: int, y2: int) -> Tuple[int, int, int, int]:
@@ -165,3 +165,297 @@ def clamp_popup_to_screen(
     clamped_y = max(screen_y, min(y, max_y)) if max_y >= screen_y else screen_y
 
     return clamped_x, clamped_y
+
+
+# ---------------------------------------------------------------------------
+# Freehand Selection Pure Geometry Functions
+# ---------------------------------------------------------------------------
+
+def add_point_if_far_enough(
+    points: list[Tuple[int, int]],
+    new_point: Tuple[int, int],
+    min_distance: float = 2.0,
+) -> bool:
+    """Filter incoming stroke points by Euclidean distance in physical pixels.
+
+    Discards points closer than min_distance (default 2.0 px) to the previous point.
+    Returns True if the point was added, False if ignored.
+    """
+    if not points:
+        points.append((int(new_point[0]), int(new_point[1])))
+        return True
+
+    last_x, last_y = points[-1]
+    dx = new_point[0] - last_x
+    dy = new_point[1] - last_y
+    if (dx * dx + dy * dy) >= (min_distance * min_distance):
+        points.append((int(new_point[0]), int(new_point[1])))
+        return True
+    return False
+
+
+def close_path(points: list[Tuple[int, int]]) -> list[Tuple[int, int]]:
+    """Automatically close a stroke path by connecting the last point to the first point."""
+    if not points:
+        return []
+    if points[0] != points[-1]:
+        return list(points) + [points[0]]
+    return list(points)
+
+
+def polygon_bounding_box(points: list[Tuple[int, int]]) -> Tuple[int, int, int, int]:
+    """Calculate the (min_x, min_y, w, h) bounding box of a collection of points."""
+    if not points:
+        return 0, 0, 0, 0
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    min_x = min(xs)
+    max_x = max(xs)
+    min_y = min(ys)
+    max_y = max(ys)
+    return min_x, min_y, max(0, max_x - min_x), max(0, max_y - min_y)
+
+
+def union_bounding_boxes(boxes: list[Tuple[int, int, int, int]]) -> Tuple[int, int, int, int]:
+    """Compute the enclosing union of multiple (x, y, w, h) bounding boxes."""
+    valid = [b for b in boxes if b[2] > 0 and b[3] > 0]
+    if not valid:
+        return 0, 0, 0, 0
+
+    min_x = min(b[0] for b in valid)
+    min_y = min(b[1] for b in valid)
+    max_x = max(b[0] + b[2] for b in valid)
+    max_y = max(b[1] + b[3] for b in valid)
+    return min_x, min_y, max(0, max_x - min_x), max(0, max_y - min_y)
+
+
+def polygon_area(points: list[Tuple[int, int]]) -> float:
+    """Calculate polygon area using the Shoelace formula."""
+    if len(points) < 3:
+        return 0.0
+    n = len(points)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += points[i][0] * points[j][1] - points[j][0] * points[i][1]
+    return abs(area) / 2.0
+
+
+def is_straight_line(points: list[Tuple[int, int]], tolerance: float = 1.5) -> bool:
+    """Check if all points in a stroke lie along a straight line within tolerance."""
+    if len(points) < 3:
+        return True
+
+    p1 = points[0]
+    p2 = points[-1]
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    length_sq = dx * dx + dy * dy
+
+    if length_sq == 0:
+        # All points start and end at same point; check distance from p1
+        for p in points:
+            dist_sq = (p[0] - p1[0]) ** 2 + (p[1] - p1[1]) ** 2
+            if dist_sq > tolerance * tolerance:
+                return False
+        return True
+
+    length = length_sq ** 0.5
+    for p in points:
+        # Perpendicular distance to line p1 -> p2
+        dist = abs(dy * p[0] - dx * p[1] + p2[0] * p1[1] - p2[1] * p1[0]) / length
+        if dist > tolerance:
+            return False
+
+    return True
+
+
+def is_degenerate_stroke(
+    points: list[Tuple[int, int]],
+    min_w: int = 8,
+    min_h: int = 8,
+    min_area: float = 64.0,
+) -> bool:
+    """Determine if a freehand stroke is degenerate and should be ignored.
+
+    A stroke is degenerate if:
+    - It contains fewer than 3 points
+    - Its bounding box width < 8 or height < 8 physical pixels
+    - Its enclosed polygon area < 64 square pixels
+    - All points lie in a straight line
+    """
+    if len(points) < 3:
+        return True
+
+    _, _, w, h = polygon_bounding_box(points)
+    if w < min_w or h < min_h:
+        return True
+
+    if polygon_area(points) < min_area:
+        return True
+
+    if is_straight_line(points):
+        return True
+
+    return False
+
+
+def _perpendicular_distance(
+    pt: Tuple[int, int], line_start: Tuple[int, int], line_end: Tuple[int, int]
+) -> float:
+    """Perpendicular distance from pt to line segment line_start -> line_end."""
+    dx = line_end[0] - line_start[0]
+    dy = line_end[1] - line_start[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq == 0:
+        return ((pt[0] - line_start[0]) ** 2 + (pt[1] - line_start[1]) ** 2) ** 0.5
+    return abs(dy * pt[0] - dx * pt[1] + line_end[0] * line_start[1] - line_end[1] * line_start[0]) / (
+        length_sq ** 0.5
+    )
+
+
+def _rdp_segment(segment: list[Tuple[int, int]], epsilon: float) -> list[Tuple[int, int]]:
+    """Recursive Ramer-Douglas-Peucker reduction on a single segment."""
+    if len(segment) <= 2:
+        return list(segment)
+
+    start = segment[0]
+    end = segment[-1]
+    d_max = 0.0
+    index = 0
+
+    for i in range(1, len(segment) - 1):
+        d = _perpendicular_distance(segment[i], start, end)
+        if d > d_max:
+            d_max = d
+            index = i
+
+    if d_max > epsilon:
+        left = _rdp_segment(segment[: index + 1], epsilon)
+        right = _rdp_segment(segment[index:], epsilon)
+        return left[:-1] + right
+    else:
+        return [start, end]
+
+
+def rdp_simplify(points: list[Tuple[int, int]], epsilon: float = 2.0) -> list[Tuple[int, int]]:
+    """Simplify polyline using Ramer-Douglas-Peucker while pinning extreme vertices.
+
+    Guarantees that the resulting simplified polygon has the EXACT same bounding box
+    (min_x, min_y, max_x, max_y) as the original stroke.
+    """
+    if len(points) <= 3:
+        return list(points)
+
+    # Pin extreme bounding-box indices so RDP simplification cannot change the bbox
+    min_x_idx = min(range(len(points)), key=lambda i: (points[i][0], i))
+    max_x_idx = max(range(len(points)), key=lambda i: (points[i][0], -i))
+    min_y_idx = min(range(len(points)), key=lambda i: (points[i][1], i))
+    max_y_idx = max(range(len(points)), key=lambda i: (points[i][1], -i))
+
+    pinned_indices = sorted(set([0, min_x_idx, max_x_idx, min_y_idx, max_y_idx, len(points) - 1]))
+
+    result: list[Tuple[int, int]] = []
+    for i in range(len(pinned_indices) - 1):
+        sub_start = pinned_indices[i]
+        sub_end = pinned_indices[i + 1]
+        if sub_start == sub_end:
+            continue
+        sub_pts = points[sub_start : sub_end + 1]
+        simplified_sub = _rdp_segment(sub_pts, epsilon)
+        if not result:
+            result.extend(simplified_sub)
+        else:
+            result.extend(simplified_sub[1:])
+
+    return result
+
+
+def build_polygon_mask(
+    strokes: list[list[Tuple[int, int]]],
+    bbox: Tuple[int, int, int, int],
+    grow_radius: int = 4,
+) -> "Image.Image":
+    """Build a physical-pixel Pillow grayscale ('L') mask for the given strokes within bbox.
+
+    Grows the mask by grow_radius (using MaxFilter with odd size 2*r + 1) so text
+    touching the border line is preserved cleanly.
+    """
+    from PIL import Image, ImageDraw, ImageFilter
+
+    bx, by, bw, bh = bbox
+    if bw <= 0 or bh <= 0:
+        return Image.new("L", (1, 1), 0)
+
+    mask = Image.new("L", (bw, bh), 0)
+    draw = ImageDraw.Draw(mask)
+
+    for stroke in strokes:
+        if len(stroke) < 3:
+            continue
+        simplified = rdp_simplify(stroke, epsilon=2.0)
+        # Translate to local crop coordinates
+        local_pts = [(x - bx, y - by) for (x, y) in simplified]
+        # Draw filled polygon
+        draw.polygon(local_pts, fill=255)
+        # Draw 3px outline matching the live stroke
+        draw.line(local_pts + [local_pts[0]], fill=255, width=3)
+
+    if grow_radius > 0:
+        # Filter size must be odd: 2 * 4 + 1 = 9
+        filter_size = 2 * grow_radius + 1
+        mask = mask.filter(ImageFilter.MaxFilter(filter_size))
+
+    return mask
+
+
+def crop_freehand(
+    image: Any,
+    strokes: list[list[Tuple[int, int]]],
+    outside_shape: str = "blank",
+) -> Any:
+    """Extract freehand selection from image with 'blank' or 'keep' outside pixels.
+
+    Args:
+        image: Source QImage of the frozen display.
+        strokes: List of closed physical-pixel stroke polygons.
+        outside_shape: 'blank' (pixels outside shape become pure white) or 'keep' (plain bbox).
+
+    Returns:
+        Cropped QImage in Format_RGB888 (with no alpha channel).
+    """
+    from PIL import Image
+    from PySide6.QtGui import QImage
+
+    if not strokes:
+        return QImage()
+
+    boxes = [polygon_bounding_box(s) for s in strokes]
+    ux, uy, uw, uh = union_bounding_boxes(boxes)
+
+    cx, cy, cw, ch = clamp_crop_box(ux, uy, uw, uh, image.width(), image.height())
+    if cw <= 0 or ch <= 0:
+        return QImage()
+
+    if outside_shape == "keep":
+        cropped = image.copy(cx, cy, cw, ch)
+        return cropped.convertToFormat(QImage.Format.Format_RGB888)
+
+    # outside_shape == 'blank':
+    cropped = image.copy(cx, cy, cw, ch).convertToFormat(QImage.Format.Format_RGB888)
+
+    # Convert cropped QImage to PIL RGB Image
+    ptr = cropped.bits()
+    pil_img = Image.frombuffer("RGB", (cw, ch), ptr, "raw", "RGB", cropped.bytesPerLine(), 1).copy()
+
+    # Build dilated mask
+    mask = build_polygon_mask(strokes, (cx, cy, cw, ch), grow_radius=4)
+
+    # Composite with pure white background
+    white_bg = Image.new("RGB", (cw, ch), (255, 255, 255))
+    composited = Image.composite(pil_img, white_bg, mask)
+
+    # Convert back to QImage Format_RGB888 with no alpha
+    data = composited.tobytes("raw", "RGB")
+    result = QImage(data, cw, ch, cw * 3, QImage.Format.Format_RGB888).copy()
+    return result

@@ -762,15 +762,33 @@ class PeachyPopup(QWidget):
             self.chip_btn.setText("Short")
         self.length_changed.emit(self._answer_length)
 
-    def _toggle_pin(self) -> None:
-        self._is_pinned = not self._is_pinned
-        self.pin_btn.setChecked(self._is_pinned)
-        self.pin_btn.setText("📌" if self._is_pinned else "📍")
-        self.pin_btn.setToolTip("Unpin window" if self._is_pinned else "Pin to stay on top")
+    def set_answer_length(self, length: str) -> None:
+        """Set answer length mode ('short' or 'detailed') and update chip UI."""
+        self._answer_length = "detailed" if str(length).lower() == "detailed" else "short"
+        if hasattr(self, "chip_btn"):
+            self.chip_btn.setText("Detailed" if self._answer_length == "detailed" else "Short")
 
-        # Update Qt window flags seamlessly
+    @property
+    def pinned(self) -> bool:
+        return self._is_pinned
+
+    @pinned.setter
+    def pinned(self, value: bool) -> None:
+        self.set_pinned(value)
+
+    def set_pinned(self, pinned: bool) -> None:
+        """Set pinned stay-on-top status and update button UI."""
+        self._is_pinned = bool(pinned)
+        if hasattr(self, "pin_btn"):
+            self.pin_btn.setChecked(self._is_pinned)
+            self.pin_btn.setText("📌" if self._is_pinned else "📍")
+            self.pin_btn.setToolTip("Unpin window" if self._is_pinned else "Pin to stay on top")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._is_pinned)
-        self.show()
+        if self.isVisible():
+            self.show()
+
+    def _toggle_pin(self) -> None:
+        self.set_pinned(not self._is_pinned)
 
     def minimize_to_pill(self) -> None:
         """Collapse main card into the small floating pill companion."""

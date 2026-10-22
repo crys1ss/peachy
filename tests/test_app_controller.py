@@ -273,3 +273,29 @@ def test_new_screenshot_preserves_conversation_history(controller_setup, qtbot):
     controller.on_popup_cancelled()
     assert len(controller._current_history) == 0
     assert state_mgr.state == AppState.IDLE
+
+
+def test_hotkey_pressed_during_selecting_is_ignored(controller_setup, qtbot):
+    """Verify hotkey activation while in SELECTING state is safely ignored and does not double-activate."""
+    controller, provider, popup, state_mgr = controller_setup
+    from tests.test_selection_overlay import create_mock_monitor
+    mock_mon = create_mock_monitor()
+
+    # Move to SELECTING
+    with patch("core.win32.get_foreground_window", return_value=123), \
+         patch("core.app_controller.capture_all_monitors", return_value=[mock_mon]):
+        controller.on_activated()
+
+    assert state_mgr.state == AppState.SELECTING
+
+    # Press hotkey again while SELECTING
+    with patch("core.app_controller.capture_all_monitors") as mock_capture:
+        controller.on_activated()
+        # Must not re-trigger capture
+        mock_capture.assert_not_called()
+
+    # State remains in SELECTING
+    assert state_mgr.state == AppState.SELECTING
+
+    controller.on_overlay_cancelled()
+    assert state_mgr.state == AppState.IDLE

@@ -56,6 +56,8 @@ class AppController(QObject):
         self.popup = popup
         self.provider = provider or GeminiProvider()
         self.settings = settings or load_settings()
+        self.overlay_manager.mode = getattr(self.settings, "selection_mode", "freehand")
+        self.overlay_manager.outside_shape = getattr(self.settings, "outside_shape", "blank")
 
         # Request state tracking
         self._current_request_id: int = 0
@@ -142,7 +144,12 @@ class AppController(QObject):
             self.state_manager.transition_to(AppState.SELECTING)
 
             # 5. Display frozen selection overlays
-            self.overlay_manager.start_selection(monitors, self._saved_foreground_hwnd)
+            self.overlay_manager.start_selection(
+                monitors,
+                self._saved_foreground_hwnd,
+                mode=getattr(self.settings, "selection_mode", "freehand"),
+                outside_shape=getattr(self.settings, "outside_shape", "blank"),
+            )
 
         except Exception as err:
             logger.exception("Screen capture failed: %s", err)
@@ -259,6 +266,7 @@ class AppController(QObject):
             image_png=image_png,
             question=question,
             history=self._current_history,
+            answer_length=getattr(self.settings, "answer_length", "short"),
             parent=self,
         )
         self._active_worker.result_ready.connect(self._on_worker_result)

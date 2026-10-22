@@ -31,6 +31,7 @@ class GeminiWorker(QThread):
         image_png: Optional[bytes],
         question: str,
         history: Optional[List[Any]] = None,
+        answer_length: str = "short",
         parent: Optional[Any] = None,
     ):
         super().__init__(parent)
@@ -39,6 +40,7 @@ class GeminiWorker(QThread):
         self.image_png = image_png
         self.question = question
         self.history = history or []
+        self.answer_length = answer_length
         self._is_cancelled = False
 
     def cancel(self) -> None:
@@ -54,11 +56,19 @@ class GeminiWorker(QThread):
         """Execute the AI provider request off the main GUI thread."""
         logger.debug("Worker starting request %d...", self.request_id)
         try:
-            result = self.provider.ask(
-                image_png=self.image_png,
-                question=self.question,
-                history=self.history,
-            )
+            try:
+                result = self.provider.ask(
+                    image_png=self.image_png,
+                    question=self.question,
+                    history=self.history,
+                    answer_length=self.answer_length,
+                )
+            except TypeError:
+                result = self.provider.ask(
+                    image_png=self.image_png,
+                    question=self.question,
+                    history=self.history,
+                )
 
             if not self._is_cancelled:
                 logger.debug("Worker request %d succeeded.", self.request_id)

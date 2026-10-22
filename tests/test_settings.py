@@ -17,6 +17,8 @@ def test_settings_defaults():
     assert s.double_tap_interval_ms == 280
     assert s.launch_at_startup is False
     assert s.answer_length == "short"
+    assert s.selection_mode == "freehand"
+    assert s.outside_shape == "blank"
     # Ensure no API key field exists on Settings
     assert not hasattr(s, "api_key")
     assert not hasattr(s, "gemini_api_key")

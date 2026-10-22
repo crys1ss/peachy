@@ -37,6 +37,8 @@ def test_settings_window_initialization(qtbot):
         assert win.pinned_check.isChecked() is True
         assert win.pos_last.isChecked() is True
         assert win.startup_check.isChecked() is True
+        assert win.mode_freehand.isChecked() is True
+        assert win.shape_blank.isChecked() is True
         assert win.key_input.text() == "fake-secret-key-123"
 
 
@@ -128,6 +130,8 @@ def test_save_and_apply_success(qtbot):
         win.interval_slider.setValue(350)
         win.key_input.setText("new-secret-token")
         win.pos_near.setChecked(True)
+        win.mode_rect.setChecked(True)
+        win.shape_keep.setChecked(True)
 
         win._save_and_apply()
 
@@ -135,6 +139,8 @@ def test_save_and_apply_success(qtbot):
         assert test_settings.double_tap_enabled is True
         assert test_settings.double_tap_interval_ms == 350
         assert test_settings.popup_position == "near_selection"
+        assert test_settings.selection_mode == "rectangle"
+        assert test_settings.outside_shape == "keep"
 
         mock_save.assert_called_once()
         mock_set_key.assert_called_once_with("new-secret-token")

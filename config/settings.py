@@ -38,6 +38,8 @@ class Settings:
     launch_at_startup: bool = False
     answer_length: str = "short"  # "short" or "detailed"
     popup_position: str = "near_selection"  # "near_selection" or "last_used"
+    selection_mode: str = "freehand"  # "freehand" or "rectangle"
+    outside_shape: str = "blank"  # "blank" or "keep"
 
 
 def set_launch_at_startup(enabled: bool, exe_path: str | None = None) -> bool:
@@ -127,6 +129,10 @@ def load_settings(path: Path | str | None = None) -> Settings:
         # Filter only known fields of Settings
         known_fields = {f.name for f in Settings.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        if filtered_data.get("selection_mode") not in ("freehand", "rectangle"):
+            filtered_data["selection_mode"] = "freehand"
+        if filtered_data.get("outside_shape") not in ("blank", "keep"):
+            filtered_data["outside_shape"] = "blank"
         return Settings(**filtered_data)
     except Exception as exc:
         logger.warning(

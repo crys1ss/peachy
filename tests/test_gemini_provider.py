@@ -194,3 +194,45 @@ def test_empty_response_error():
     provider = GeminiProvider(api_key="fake-key", client=mock_client)
     with pytest.raises(EmptyResponseError):
         provider.ask(image_png=None, question="test")
+
+
+def test_detailed_length_instruction():
+    """Verify answer_length='detailed' adds in-depth instruction to system instruction."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_candidate = MagicMock()
+    mock_candidate.finish_reason = None
+    mock_response.candidates = [mock_candidate]
+    mock_response.text = "Detailed answer"
+    mock_client.models.generate_content.return_value = mock_response
+
+    provider = GeminiProvider(api_key="fake-key", client=mock_client)
+    result = provider.ask(image_png=None, question="What is this?", answer_length="detailed")
+
+    assert result.text == "Detailed answer"
+    call_kwargs = mock_client.models.generate_content.call_args.kwargs
+    instruction = call_kwargs["config"].system_instruction
+    assert "detailed" in instruction.lower()
+
+
+def test_fallback_model_on_503():
+    """Verify that when primary model returns 503, provider falls back to working model."""
+    mock_client = MagicMock()
+
+    mock_success = MagicMock()
+    mock_candidate = MagicMock()
+    mock_candidate.finish_reason = None
+    mock_success.candidates = [mock_candidate]
+    mock_success.text = "Fallback success"
+
+    # First call (primary model) fails with 503; second call (fallback) succeeds
+    mock_client.models.generate_content.side_effect = [
+        errors.APIError(code=503, response_json={"error": {"message": "High demand"}}),
+        mock_success,
+    ]
+
+    provider = GeminiProvider(model="gemini-3.8-flash", api_key="fake-key", client=mock_client)
+    result = provider.ask(image_png=None, question="Test question")
+
+    assert result.text == "Fallback success"
+    assert mock_client.models.generate_content.call_count == 2

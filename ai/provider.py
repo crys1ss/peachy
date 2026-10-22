@@ -116,6 +116,7 @@ class BaseAIProvider(ABC):
         image_png: Optional[bytes],
         question: str,
         history: Optional[List[Any]] = None,
+        answer_length: str = "short",
     ) -> AnswerResult:
         """Submit a prompt and optional image to the AI provider.
 

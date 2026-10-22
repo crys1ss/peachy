@@ -63,33 +63,6 @@ def create_sparkle_icon(size: int = 64) -> QIcon:
     return QIcon(pixmap)
 
 
-class SettingsPlaceholderDialog(QDialog):
-    """Simple settings dialog placeholder for Day 1."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Peachy - Settings")
-        self.setFixedSize(360, 180)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        info = QLabel(
-            "<b>Peachy Settings</b><br><br>"
-            "Full visual settings editor will be unlocked on Day 5.<br>"
-            "Default shortcut: <code>Ctrl+Shift+Space</code><br>"
-            "Configuration file: <code>%APPDATA%\\Peachy\\settings.json</code>"
-        )
-        info.setTextFormat(Qt.RichText)
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        btn = QPushButton("Close")
-        btn.clicked.connect(self.accept)
-        layout.addWidget(btn, alignment=Qt.AlignRight)
-
-
 class TrayManager(QObject):
     """Manages the system tray icon, context menu, and notifications."""
 
@@ -106,7 +79,6 @@ class TrayManager(QObject):
 
         self._menu = None
         self._pause_action: Optional[QAction] = None
-        self._settings_dialog: Optional[SettingsPlaceholderDialog] = None
 
         self._build_menu()
         self._tray_icon.activated.connect(self._on_tray_activated)
@@ -158,12 +130,7 @@ class TrayManager(QObject):
             self._pause_action.setChecked(paused)
 
     def open_settings(self) -> None:
-        """Display the settings dialog."""
-        if self._settings_dialog is None:
-            self._settings_dialog = SettingsPlaceholderDialog()
-        self._settings_dialog.show()
-        self._settings_dialog.raise_()
-        self._settings_dialog.activateWindow()
+        """Request the main application to display the visual settings window."""
         self.settings_requested.emit()
 
     def show_notification(self, title: str, message: str, msecs: int = 3000) -> None:

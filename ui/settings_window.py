@@ -61,8 +61,9 @@ logger = logging.getLogger(__name__)
 
 AVAILABLE_MODELS = [
     "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.8-flash",
-    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
 ]
 
 
@@ -203,7 +204,7 @@ class SettingsWindow(QDialog):
 
     def _init_window(self) -> None:
         self.setWindowTitle("Peachy Settings")
-        self.setFixedSize(460, 680)
+        self.setFixedSize(460, 770)
         self.setFont(theme.get_app_font(13))
         self.setStyleSheet(self._generate_stylesheet())
 
@@ -365,7 +366,41 @@ class SettingsWindow(QDialog):
         # Divider
         layout.addWidget(self._create_divider())
 
-        # 4. Popup & System Section
+        # 4. Selection & Capture Section
+        sel_title = QLabel("Selection & Capture")
+        sel_title.setFont(theme.get_app_font(13, bold=True))
+        layout.addWidget(sel_title)
+
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Mode:")
+        self.mode_freehand = QRadioButton("Freehand (default)")
+        self.mode_rect = QRadioButton("Rectangle")
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.addButton(self.mode_freehand, 0)
+        self.mode_group.addButton(self.mode_rect, 1)
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.mode_freehand)
+        mode_row.addWidget(self.mode_rect)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
+        shape_row = QHBoxLayout()
+        shape_label = QLabel("Outside shape:")
+        self.shape_blank = QRadioButton("Blank (white)")
+        self.shape_keep = QRadioButton("Keep (bounding box)")
+        self.shape_group = QButtonGroup(self)
+        self.shape_group.addButton(self.shape_blank, 0)
+        self.shape_group.addButton(self.shape_keep, 1)
+        shape_row.addWidget(shape_label)
+        shape_row.addWidget(self.shape_blank)
+        shape_row.addWidget(self.shape_keep)
+        shape_row.addStretch()
+        layout.addLayout(shape_row)
+
+        # Divider
+        layout.addWidget(self._create_divider())
+
+        # 5. Popup & System Section
         pref_title = QLabel("Popup & Startup Preferences")
         pref_title.setFont(theme.get_app_font(13, bold=True))
         layout.addWidget(pref_title)
@@ -481,6 +516,17 @@ class SettingsWindow(QDialog):
         else:
             self.model_combo.setEditText(self.settings.model)
 
+        # Selection preferences
+        if getattr(self.settings, "selection_mode", "freehand") == "rectangle":
+            self.mode_rect.setChecked(True)
+        else:
+            self.mode_freehand.setChecked(True)
+
+        if getattr(self.settings, "outside_shape", "blank") == "keep":
+            self.shape_keep.setChecked(True)
+        else:
+            self.shape_blank.setChecked(True)
+
         # Popup preferences
         self.pinned_check.setChecked(self.settings.pinned)
         if getattr(self.settings, "popup_position", "near_selection") == "last_used":
@@ -558,6 +604,8 @@ class SettingsWindow(QDialog):
         self.settings.double_tap_enabled = self.double_tap_check.isChecked()
         self.settings.double_tap_interval_ms = self.interval_slider.value()
         self.settings.model = self.model_combo.currentText().strip() or "gemini-3.5-flash"
+        self.settings.selection_mode = "rectangle" if self.mode_rect.isChecked() else "freehand"
+        self.settings.outside_shape = "keep" if self.shape_keep.isChecked() else "blank"
         self.settings.pinned = self.pinned_check.isChecked()
         self.settings.popup_position = "last_used" if self.pos_last.isChecked() else "near_selection"
         self.settings.launch_at_startup = self.startup_check.isChecked()

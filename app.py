@@ -246,11 +246,18 @@ class PeachyApp(QObject):
 
     def _on_settings_applied(self, new_settings: Settings) -> None:
         """Update active settings across all running components."""
-        self.settings = new_settings
-        self.controller.settings = new_settings
-        self.popup.pinned = new_settings.pinned
-        self.popup.set_answer_length(new_settings.answer_length)
-        self.logger.info("Settings updated and applied live.")
+        try:
+            self.settings = new_settings
+            self.controller.settings = new_settings
+            if hasattr(self.popup, "set_pinned"):
+                self.popup.set_pinned(new_settings.pinned)
+            else:
+                self.popup.pinned = new_settings.pinned
+            if hasattr(self.popup, "set_answer_length"):
+                self.popup.set_answer_length(new_settings.answer_length)
+            self.logger.info("Settings updated and applied live.")
+        except Exception as exc:
+            self.logger.exception("Error applying updated settings: %s", exc)
 
     def open_settings(self) -> None:
         """Display the settings window."""
