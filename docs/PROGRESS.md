@@ -8,7 +8,7 @@
 | **Day 2** (Fri 23 Oct) | Screen capture, frozen selection overlay, multi-monitor & DPI | **Done & Verified** |
 | **Day 3** (Sat 24 Oct) | Gemini provider, plain popup views, workers, end-to-end MVP | **Done & Verified** |
 | **Day 4** (Sun 25 Oct) | Cute popup styling, focus handling, drag, pin, animations | **Done & Verified** |
-| **Day 5** (Mon 26 Oct) | Settings window, keyring, double-tap C hook, hardening pass | Pending |
+| **Day 5** (Mon 26 Oct) | Settings window, keyring, double-tap C hook, hardening pass | **Done & Verified** |
 | **Day 6** (Tue 27 Oct) | PyInstaller build, onedir packaging, README, acceptance | Pending |
 
 ---
@@ -304,5 +304,64 @@ Generated 5 preview screenshots into `docs/screens/`:
   - Click Minimize button (`—`): Verify it collapses to the cute pink pill; click pill to restore.
   - Click "New Screenshot": Verify screen freezes for a new crop and continues the previous conversation context.
   - Windows Dark Mode: Confirm colors adapt smoothly to dark mode.
+
+---
+
+## Day 5 Summary (Monday 26 Oct)
+
+### What Works & Is Done
+1. **Settings Window ([ui/settings_window.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/settings_window.py))**:
+   - Styled adhering to Peachy design system (`16px` radius, `#F472B6` accent, `#FFF1F6` / `#2A2328` surfaces).
+   - **Shortcut Recorder**: Interactive click-to-record button that intercepts keys, validates with `parse_shortcut`, attempts live registration, detects collisions inline, and rolls back to previous shortcut if registration fails.
+   - **Double-Tap C Hook Config**: OFF by default, slider for 200–500ms (default 280ms), with warning text: *"May trigger while typing words with 'cc'"*.
+   - **AI Configuration**: Masked password field for API key with eye toggle; non-blocking "Test" button verifying connection with inline green/red feedback; model dropdown populated with options and editable fallback.
+   - **Popup & System Preferences**: "Pinned by default" toggle; Position radio choice ("Near selection" vs "Last used spot"); Windows startup toggle via `winreg`.
+   - **Privacy Notice**: Styled callout: *"Peachy only looks at your screen when you press the shortcut. It sends only the area you select, and only when you press Send. Nothing is recorded or saved."*
+2. **Secure Key Storage with Keyring ([config/key_storage.py](file:///c:/Users/TANAY/Downloads/Peachy/config/key_storage.py))**:
+   - Integrates Windows Credential Manager (`keyring.backends.Windows.WinVaultKeyring`) under service name `"Peachy"`, username `"gemini_api_key"`.
+   - Strict lookup precedence: Keyring vault first, then `GEMINI_API_KEY` environment variable.
+   - Keys are never serialized to `settings.json`, logs, or crash dumps.
+3. **Low-Level Keyboard Hook ([core/double_tap.py](file:///c:/Users/TANAY/Downloads/Peachy/core/double_tap.py) & [core/win32.py](file:///c:/Users/TANAY/Downloads/Peachy/core/win32.py))**:
+   - Implements `WH_KEYBOARD_LL` via ctypes with typed `HOOKPROC`, `KBDLLHOOKSTRUCT`, `SetWindowsHookExW`, `UnhookWindowsHookEx`, and `CallNextHookEx`.
+   - Pure `DoubleTapDetector` unit-tested for key transitions.
+   - Guards:
+     - Ignores injected events (`LLKHF_INJECTED`).
+     - Ignores auto-repeat from held key.
+     - Requires plain C (no Ctrl, Alt, or Win modifiers).
+     - Any intervening key down resets the sequence.
+     - Strong Python reference maintained on callback to prevent garbage collection.
+     - Documented UIPI limitation for elevated (Administrator) windows.
+4. **Hardening Pass**:
+   - Friendly typed error messages:
+     - Missing key: `"Gemini API key is missing. Please add your key in Settings."`
+     - Rate limited 429: `"Peachy needs a breather, try again in a moment"`
+     - Offline / network: `"You appear to be offline. Please check your internet connection and retry."`
+     - Invalid key: `"Gemini API key is invalid or unauthorized. Please verify your key."`
+   - `SelectionOverlay`: `closeEvent` cleanly cancels selection and restores foreground HWND when Alt+F4 is pressed.
+   - `OverlayManager`: Topology listeners safely cancel active selection without crashing when monitors are plugged/unplugged.
+   - `app.py`: `sys.excepthook` catches any unhandled Qt slot exception, logs to rotated file, displays a friendly recovery toast, and resets FSM to `IDLE`. `qInstallMessageHandler` routes Qt messages to Python logging.
+   - Clean shutdown in `AppController.shutdown()` terminates active worker threads with zero orphaned processes.
+5. **Privacy Audit ([tests/test_privacy_audit.py](file:///c:/Users/TANAY/Downloads/Peachy/tests/test_privacy_audit.py))**:
+   - Verified automated scan of codebase and real `peachy.log`: 0 hardcoded keys, 0 unredacted tokens, 0 prompt text, 0 image bytes dumped.
+
+### Verified by Automated Tests (107/107 pytest tests passed in 2.52s)
+- `tests/test_key_storage.py` (5 tests): Keyring precedence, env fallback, none handling, save/delete operations.
+- `tests/test_double_tap.py` (8 tests): Fast "c c" fires, slow "c c" does not, "c x c" does not, "ctrl+c" does not, held C auto-repeat ignored, injected events ignored, hook lifecycle.
+- `tests/test_settings_window.py` (5 tests): UI initialization, recorder click/key-press, Esc cancel, conflict inline error, save and apply.
+- `tests/test_hardening.py` (6 tests): Exact error messages, 8x8 threshold, Alt+F4 overlay close, monitor topology change, `sys.excepthook` crash resilience, worker termination on quit.
+- `tests/test_privacy_audit.py` (3 tests): RedactionFilter coverage, hardcoded key scanner across codebase, log file verification.
+- Prior Day Tests (80 tests): All Days 1-4 tests continue passing with zero regressions.
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Change the shortcut to `Alt+Q` in Settings: verify it works immediately without restart.
+- [ ] Pick a shortcut another app already uses: verify friendly conflict message appears inline and old shortcut is retained.
+- [ ] Paste your API key in Settings and click "Test": verify green "✓ API Key is valid!" appears. Delete env var `GEMINI_API_KEY`, restart app, and verify Peachy still works.
+- [ ] Enable Double-tap C and type `"success accept occur"` in Notepad: verify typing words with 'cc' does not trigger false activations.
+- [ ] Change scaling or unplug a monitor while Peachy runs: verify no crash occurs and overlay/popup re-clamps cleanly.
+- [ ] Quit while thinking: verify process exits cleanly with no residual python process in Task Manager.
+- [ ] Enable startup in Settings: verify registry key is created under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+
+### Known Bugs
+- None.
 
 

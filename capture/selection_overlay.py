@@ -240,6 +240,13 @@ class SelectionOverlay(QWidget):
         else:
             super().keyPressEvent(event)
 
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """Handle Alt+F4 or window closure gracefully by cancelling selection."""
+        if self.manager and self in self.manager.overlays:
+            self.manager.overlays.remove(self)
+            self.manager.cancel()
+        super().closeEvent(event)
+
 
 class OverlayManager(QWidget):
     """Coordinates selection overlays across all connected monitors."""
@@ -256,6 +263,17 @@ class OverlayManager(QWidget):
         self.safety_timer = QTimer(self)
         self.safety_timer.setSingleShot(True)
         self.safety_timer.timeout.connect(self._on_timeout)
+
+        # Monitor topology change listener (cancel safely if monitor plugged/unplugged)
+        app = QGuiApplication.instance()
+        if app:
+            app.screenAdded.connect(self._on_screens_changed)
+            app.screenRemoved.connect(self._on_screens_changed)
+
+    def _on_screens_changed(self, *args) -> None:
+        if self.overlays:
+            logger.info("Screen topology changed during selection. Cancelling selection safely.")
+            self.cancel()
 
     def start_selection(
         self, captured_monitors: List[CapturedMonitor], foreground_hwnd: int = 0
@@ -346,8 +364,9 @@ class OverlayManager(QWidget):
     def cleanup(self) -> None:
         """Close and delete all overlay widgets."""
         self.safety_timer.stop()
-        for ov in self.overlays:
+        to_close = list(self.overlays)
+        self.overlays.clear()
+        for ov in to_close:
             ov.hide()
             ov.close()
             ov.deleteLater()
-        self.overlays.clear()

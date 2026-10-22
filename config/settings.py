@@ -12,9 +12,18 @@ import os
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import sys
 from typing import Any
 
+try:
+    import winreg
+except ImportError:
+    winreg = None  # type: ignore
+
 logger = logging.getLogger(__name__)
+
+RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+APP_REG_NAME = "Peachy"
 
 
 @dataclass
@@ -28,6 +37,57 @@ class Settings:
     double_tap_interval_ms: int = 280
     launch_at_startup: bool = False
     answer_length: str = "short"  # "short" or "detailed"
+    popup_position: str = "near_selection"  # "near_selection" or "last_used"
+
+
+def set_launch_at_startup(enabled: bool, exe_path: str | None = None) -> bool:
+    """Configure or remove Peachy from HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run."""
+    if winreg is None:
+        logger.warning("winreg is not available on this platform.")
+        return False
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            RUN_KEY_PATH,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            if enabled:
+                target_exe = exe_path or sys.executable
+                quoted_cmd = f'"{target_exe}"'
+                winreg.SetValueEx(key, APP_REG_NAME, 0, winreg.REG_SZ, quoted_cmd)
+                logger.info("Configured Windows startup run key: %s", quoted_cmd)
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_REG_NAME)
+                    logger.info("Removed Windows startup run key.")
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception as exc:
+        logger.warning("Failed to update Windows startup registry key: %s", exc)
+        return False
+
+
+def is_launch_at_startup_enabled() -> bool:
+    """Check if Peachy is currently registered in HKCU Run registry."""
+    if winreg is None:
+        return False
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            RUN_KEY_PATH,
+            0,
+            winreg.KEY_QUERY_VALUE,
+        ) as key:
+            winreg.QueryValueEx(key, APP_REG_NAME)
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
 
 
 def get_default_settings_dir() -> Path:

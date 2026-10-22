@@ -39,6 +39,11 @@ class ThemeTokens:
     pill_bg: str          # Soft pink background for badge/chips
     shadow_color: str     # Soft drop shadow
 
+    @property
+    def soft_surface(self) -> str:
+        """Alias for surface token matching visual identity spec."""
+        return self.surface
+
 
 LIGHT_THEME = ThemeTokens(
     is_dark=False,
@@ -104,13 +109,22 @@ def get_theme(force_dark: Optional[bool] = None) -> ThemeTokens:
     return DARK_THEME if is_windows_dark_mode() else LIGHT_THEME
 
 
-def get_app_font(size: int = 13, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+def get_app_font(
+    size: int = 13,
+    weight: Optional[QFont.Weight] = None,
+    bold: bool = False,
+) -> QFont:
     """Create font prioritizing Segoe UI Variable with Segoe UI fallback."""
     font = QFont()
     # Try Segoe UI Variable first, then Segoe UI, then system sans-serif
     font.setFamilies(["Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "sans-serif"])
     font.setPixelSize(size)
-    font.setWeight(weight)
+    if weight is not None:
+        font.setWeight(weight)
+    elif bold:
+        font.setWeight(QFont.Weight.Bold)
+    else:
+        font.setWeight(QFont.Weight.Normal)
     return font
 
 

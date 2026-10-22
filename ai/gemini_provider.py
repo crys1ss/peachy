@@ -35,6 +35,7 @@ from ai.provider import (
     TimeoutError,
     UnknownError,
 )
+from config.key_storage import get_api_key
 from config.settings import load_settings
 
 logger = logging.getLogger(__name__)
@@ -56,15 +57,40 @@ REQUEST_TIMEOUT_MS = 45000  # google-genai HttpOptions timeout is in millisecond
 
 
 def get_gemini_api_key() -> Optional[str]:
-    """Retrieve the Gemini API key strictly from the environment variable.
+    """Retrieve the Gemini API key following lookup order: keyring, then environment."""
+    return get_api_key()
 
-    Security Rule: The value returned by this function MUST NEVER be printed,
-    logged, echoed, or persisted to files or tests.
-    """
-    key = os.environ.get("GEMINI_API_KEY")
-    if key:
-        key = key.strip()
-    return key if key else None
+
+def test_connection(api_key: Optional[str] = None, model: Optional[str] = None) -> tuple[bool, str]:
+    """Test API connection with a small call, returning (success, message)."""
+    key = api_key or get_api_key()
+    if not key:
+        return False, MissingKeyError.DEFAULT_MESSAGE
+
+    try:
+        client = genai.Client(api_key=key)
+        test_model = model or load_settings().model
+        client.models.generate_content(
+            model=test_model,
+            contents="Say hi in 1 word",
+            config=types.GenerateContentConfig(
+                http_options=types.HttpOptions(timeout=10000),
+            ),
+        )
+        return True, "API Key is valid!"
+    except errors.APIError as exc:
+        code = getattr(exc, "code", None)
+        if code in (400, 401, 403) or "API_KEY_INVALID" in str(exc) or "PERMISSION_DENIED" in str(exc):
+            return False, InvalidKeyError.DEFAULT_MESSAGE
+        if code == 429 or "RESOURCE_EXHAUSTED" in str(exc):
+            return False, RateLimitedError.DEFAULT_MESSAGE
+        return False, f"API error: {exc.message if hasattr(exc, 'message') else str(exc)}"
+    except (httpx.TimeoutException, errors.ClientError):
+        return False, "Connection timed out. Please check your network."
+    except httpx.NetworkError:
+        return False, NetworkError.DEFAULT_MESSAGE
+    except Exception as exc:
+        return False, f"Error: {exc}"
 
 
 def prepare_image(image_bytes: bytes, max_long_side: int = MAX_IMAGE_LONG_SIDE) -> bytes:

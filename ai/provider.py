@@ -19,7 +19,7 @@ class ProviderError(Exception):
 class MissingKeyError(ProviderError):
     """API key is missing or not configured."""
 
-    DEFAULT_MESSAGE = "Gemini API key is missing. Please set the GEMINI_API_KEY environment variable."
+    DEFAULT_MESSAGE = "Gemini API key is missing. Please add your key in Settings."
 
     def __init__(self, message: str = DEFAULT_MESSAGE, original_error: Optional[Exception] = None):
         super().__init__(message, original_error)
@@ -37,7 +37,7 @@ class InvalidKeyError(ProviderError):
 class RateLimitedError(ProviderError):
     """API quota or rate limit has been exceeded."""
 
-    DEFAULT_MESSAGE = "Gemini rate limit or quota exceeded. Please wait a moment and try again."
+    DEFAULT_MESSAGE = "Peachy needs a breather, try again in a moment"
 
     def __init__(self, message: str = DEFAULT_MESSAGE, original_error: Optional[Exception] = None):
         super().__init__(message, original_error)
@@ -55,7 +55,7 @@ class TimeoutError(ProviderError):
 class NetworkError(ProviderError):
     """Underlying network connection failure."""
 
-    DEFAULT_MESSAGE = "Network connection failure communicating with Gemini. Please check your internet connection."
+    DEFAULT_MESSAGE = "You appear to be offline. Please check your internet connection and retry."
 
     def __init__(self, message: str = DEFAULT_MESSAGE, original_error: Optional[Exception] = None):
         super().__init__(message, original_error)

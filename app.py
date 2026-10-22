@@ -19,19 +19,21 @@ import tempfile
 import time
 from typing import Optional
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QtMsgType, qInstallMessageHandler
 from PySide6.QtGui import QImage
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from capture.screen_capture import capture_all_monitors
 from capture.selection_overlay import OverlayManager
-from config.settings import load_settings
+from config.settings import Settings, load_settings
 from core import win32
 from core.app_controller import AppController
+from core.double_tap import DoubleTapHook
 from core.hotkey_manager import HotkeyManager
 from core.state_manager import AppState, StateManager
 from ui.peachy_popup import PeachyPopup
+from ui.settings_window import SettingsWindow
 from ui.tray_manager import TrayManager
 
 SINGLE_INSTANCE_SERVER_NAME = "Peachy_Single_Instance_IPC_Server"
@@ -101,8 +103,55 @@ def setup_logging() -> Path:
     return log_file
 
 
+def setup_resilient_error_handling(app_coordinator: Optional[PeachyApp] = None) -> None:
+    """Install sys.excepthook and Qt message handler to prevent crashes and log safely."""
+
+    def excepthook(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        logging.critical(
+            "Unhandled exception caught by global excepthook:",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+
+        if app_coordinator is not None:
+            try:
+                app_coordinator.tray_manager.show_notification(
+                    "Peachy Recovered",
+                    "An unexpected error occurred and was safely logged.",
+                )
+                app_coordinator.state_manager.reset_to_idle()
+                if hasattr(app_coordinator, "popup") and app_coordinator.popup:
+                    app_coordinator.popup.hide()
+                if hasattr(app_coordinator, "overlay_manager") and app_coordinator.overlay_manager:
+                    app_coordinator.overlay_manager.cleanup()
+            except Exception as rec_err:
+                logging.error("Error during excepthook recovery: %s", rec_err)
+
+    sys.excepthook = excepthook
+
+    def qt_message_handler(mode, context, message):
+        # Ignore benign Windows geometry adjustments
+        if "QWindowsWindow::setGeometry" in message:
+            return
+        if mode == QtMsgType.QtDebugMsg:
+            logging.debug("Qt: %s", message)
+        elif mode == QtMsgType.QtInfoMsg:
+            logging.info("Qt: %s", message)
+        elif mode == QtMsgType.QtWarningMsg:
+            logging.warning("Qt: %s", message)
+        elif mode == QtMsgType.QtCriticalMsg:
+            logging.error("Qt: %s", message)
+        elif mode == QtMsgType.QtFatalMsg:
+            logging.critical("Qt Fatal: %s", message)
+
+    qInstallMessageHandler(qt_message_handler)
+
+
 class PeachyApp(QObject):
-    """Main application coordinator for Day 1."""
+    """Main application coordinator for Peachy."""
 
     def __init__(self, app: QApplication, server: QLocalServer):
         super().__init__()
@@ -122,13 +171,19 @@ class PeachyApp(QObject):
         # 4. Hotkey Manager
         self.hotkey_manager = HotkeyManager(self)
 
-        # 5. Screen Capture Overlay Coordinator
+        # 5. Double-Tap C Hook (optional low-level WH_KEYBOARD_LL hook)
+        self.double_tap_hook = DoubleTapHook(
+            interval_ms=self.settings.double_tap_interval_ms,
+            parent=self,
+        )
+
+        # 6. Screen Capture Overlay Coordinator
         self.overlay_manager = OverlayManager()
 
-        # 6. Peachy Popup Window
+        # 7. Peachy Popup Window
         self.popup = PeachyPopup(pinned=self.settings.pinned, answer_length=self.settings.answer_length)
 
-        # 7. App Controller
+        # 8. App Controller
         self.controller = AppController(
             state_manager=self.state_manager,
             hotkey_manager=self.hotkey_manager,
@@ -137,6 +192,13 @@ class PeachyApp(QObject):
             popup=self.popup,
             settings=self.settings,
             parent=self,
+        )
+
+        # 9. Settings Window
+        self.settings_window = SettingsWindow(
+            settings=self.settings,
+            hotkey_manager=self.hotkey_manager,
+            double_tap_hook=self.double_tap_hook,
         )
 
         self._connect_signals()
@@ -149,21 +211,52 @@ class PeachyApp(QObject):
                 f"Could not register shortcut '{self.settings.hotkey}'. It may be in use.",
             )
 
+        # Enable double-tap C if configured
+        if self.settings.double_tap_enabled:
+            self.double_tap_hook.set_enabled(True)
+
         # Show tray icon
         self.tray_manager.show()
         self.logger.info("Peachy started. Hotkey: %s", self.settings.hotkey)
 
     def _connect_signals(self) -> None:
-        """Wire UI, Hotkey, and State Machine signals."""
+        """Wire UI, Hotkey, Hook, and State Machine signals."""
         self.hotkey_manager.registration_failed.connect(
             lambda msg: self.tray_manager.show_notification("Hotkey Conflict", msg)
         )
 
-        self.tray_manager.pause_toggled.connect(self.hotkey_manager.set_paused)
+        # Double-tap C trigger
+        self.double_tap_hook.triggered.connect(self.on_activated)
+
+        # Tray signals
+        self.tray_manager.settings_requested.connect(self.open_settings)
+        self.tray_manager.pause_toggled.connect(self._on_pause_toggled)
         self.tray_manager.quit_requested.connect(self.quit)
+
+        # Settings window applied
+        self.settings_window.settings_applied.connect(self._on_settings_applied)
 
         # Incoming single-instance IPC connections
         self.server.newConnection.connect(self._handle_ipc_connection)
+
+    def _on_pause_toggled(self, paused: bool) -> None:
+        """Pause or resume both hotkeys and double-tap hook."""
+        self.hotkey_manager.set_paused(paused)
+        self.double_tap_hook.set_paused(paused)
+
+    def _on_settings_applied(self, new_settings: Settings) -> None:
+        """Update active settings across all running components."""
+        self.settings = new_settings
+        self.controller.settings = new_settings
+        self.popup.pinned = new_settings.pinned
+        self.popup.set_answer_length(new_settings.answer_length)
+        self.logger.info("Settings updated and applied live.")
+
+    def open_settings(self) -> None:
+        """Display the settings window."""
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
 
     def _handle_ipc_connection(self) -> None:
         """Handle IPC connection from a second launch attempt."""
@@ -173,7 +266,7 @@ class PeachyApp(QObject):
             data = bytes(socket.readAll()).decode("utf-8", errors="ignore").strip()
             self.logger.info("Received IPC command from another instance: %s", data)
             if "open_settings" in data:
-                self.tray_manager.open_settings()
+                self.open_settings()
                 self.tray_manager.show_notification(
                     "Peachy is already running",
                     "Opened Settings from another launch attempt.",
@@ -187,21 +280,19 @@ class PeachyApp(QObject):
     def quit(self) -> None:
         """Clean shutdown handler."""
         self.logger.info("Shutting down Peachy...")
-        self.controller.on_popup_cancelled()
-        self.overlay_manager.cleanup()
+        self.double_tap_hook.uninstall()
         self.hotkey_manager.cleanup()
+        self.controller.shutdown()
+        self.overlay_manager.cleanup()
         self.tray_manager.hide()
         self.popup.close()
+        self.settings_window.close()
         self.server.close()
         self.app.quit()
 
 
 def check_single_instance() -> tuple[bool, QLocalServer | None]:
-    """Ensure only one instance runs.
-
-    If an instance is already active, notify it to open Settings and return (False, None).
-    Otherwise returns (True, listening_server).
-    """
+    """Ensure only one instance runs."""
     socket = QLocalSocket()
     socket.connectToServer(SINGLE_INSTANCE_SERVER_NAME)
     if socket.waitForConnected(500):
@@ -233,7 +324,9 @@ def main() -> int:
         print("Peachy is already running. Notified running instance to open Settings.")
         return 0
 
-    peachy_app = PeachyApp(app, server)  # noqa: F841
+    peachy_app = PeachyApp(app, server)
+    setup_resilient_error_handling(peachy_app)
+
     return app.exec()
 
 

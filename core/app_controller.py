@@ -191,11 +191,18 @@ class AppController(QObject):
         pixmap = QPixmap.fromImage(crop)
         self.popup.show_ask(pixmap)
 
-        # Position popup adjacent to selection
-        target_rect = getattr(self.overlay_manager, "last_selection_rect", None)
-        target_screen = getattr(self.overlay_manager, "last_screen", None) or QGuiApplication.primaryScreen()
-        if target_rect is not None and target_screen is not None:
-            self.popup.position_next_to(target_rect, target_screen)
+        # Position popup according to settings: "near_selection" vs "last_used"
+        pos_pref = getattr(self.settings, "popup_position", "near_selection")
+        last_pos = getattr(self, "_last_popup_pos", None)
+        if pos_pref == "last_used" and last_pos is not None:
+            self.popup.move(last_pos)
+            self.popup.clamp_to_current_screen()
+        else:
+            target_rect = getattr(self.overlay_manager, "last_selection_rect", None)
+            target_screen = getattr(self.overlay_manager, "last_screen", None) or QGuiApplication.primaryScreen()
+            if target_rect is not None and target_screen is not None:
+                self.popup.position_next_to(target_rect, target_screen)
+                self._last_popup_pos = self.popup.pos()
 
     def on_send_question(self, question: str) -> None:
         """User sent question from the Ask view."""
@@ -359,3 +366,16 @@ class AppController(QObject):
 
         # 4. Return FSM to IDLE
         self.state_manager.reset_to_idle()
+
+    def shutdown(self) -> None:
+        """Cancel pending tasks, stop active worker threads, and ensure clean shutdown."""
+        logger.info("AppController shutting down...")
+        self._hard_timeout_timer.stop()
+        if self._active_worker:
+            self._active_worker.cancel()
+            if self._active_worker.isRunning():
+                self._active_worker.terminate()
+                self._active_worker.wait(500)
+            self._active_worker = None
+        self.popup.close()
+        self.overlay_manager.cleanup()
