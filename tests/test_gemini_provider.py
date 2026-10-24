@@ -236,3 +236,34 @@ def test_fallback_model_on_503():
 
     assert result.text == "Fallback success"
     assert mock_client.models.generate_content.call_count == 2
+
+
+def test_fallback_model_on_504_gateway_timeout():
+    """Verify that when primary model returns 504 (deadline exceeded), fallback succeeds."""
+    mock_client = MagicMock()
+
+    mock_success = MagicMock()
+    mock_candidate = MagicMock()
+    mock_candidate.finish_reason = None
+    mock_success.candidates = [mock_candidate]
+    mock_success.text = "Fallback from 504"
+
+    mock_client.models.generate_content.side_effect = [
+        errors.APIError(code=504, response_json={"error": {"message": "Deadline expired before operation could complete."}}),
+        mock_success,
+    ]
+
+    provider = GeminiProvider(model="gemini-3.8-flash", api_key="fake-key", client=mock_client)
+    result = provider.ask(image_png=None, question="Test question")
+
+    assert result.text == "Fallback from 504"
+    assert mock_client.models.generate_content.call_count == 2
+
+
+def test_request_timeout_fits_within_hard_timeout():
+    """Ensure per-request timeout is short enough (<= 15s) so fallbacks complete before UI 45s deadline."""
+    from ai.gemini_provider import REQUEST_TIMEOUT_MS
+    from core.app_controller import HARD_TIMEOUT_MS
+
+    assert REQUEST_TIMEOUT_MS <= 15000
+    assert REQUEST_TIMEOUT_MS * 2 < HARD_TIMEOUT_MS

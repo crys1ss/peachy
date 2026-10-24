@@ -52,7 +52,7 @@ SYSTEM_INSTRUCTION = (
 )
 
 MAX_IMAGE_LONG_SIDE = 2048
-REQUEST_TIMEOUT_MS = 45000  # google-genai HttpOptions timeout is in milliseconds
+REQUEST_TIMEOUT_MS = 12000  # 12s per model attempt to allow fallbacks before 45s UI timeout
 
 
 def get_gemini_api_key() -> Optional[str]:
