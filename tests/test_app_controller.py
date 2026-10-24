@@ -324,3 +324,30 @@ def test_copy_text_auto_clipboard_copy(controller_setup, qtbot):
     assert clipboard is not None
     assert clipboard.text() == "RAW EXTRACTED OCR TEXT FROM SCREEN"
     assert popup.answer_view.header_title.text() == "Extracted Text (Copied to Clipboard)"
+
+
+def test_hotkey_while_in_error_state_auto_resets_and_activates(controller_setup, qtbot):
+    """Verify pressing the hotkey while in ERROR state auto-dismisses error and starts fresh capture."""
+    controller, provider, popup, state_mgr = controller_setup
+    from tests.test_selection_overlay import create_mock_monitor
+    mock_mon = create_mock_monitor()
+
+    # Move to ERROR state
+    state_mgr.transition_to(AppState.CAPTURING)
+    state_mgr.transition_to(AppState.SELECTING)
+    state_mgr.transition_to(AppState.ASKING)
+    state_mgr.transition_to(AppState.THINKING)
+    state_mgr.transition_to(AppState.ERROR)
+    popup.show_error("Test error message")
+    assert state_mgr.state == AppState.ERROR
+
+    # Trigger activation via hotkey
+    with patch("core.win32.get_foreground_window", return_value=123), \
+         patch("core.app_controller.capture_all_monitors", return_value=[mock_mon]):
+        controller.on_activated()
+
+    # Must transition out of ERROR to SELECTING for fresh capture
+    assert state_mgr.state == AppState.SELECTING
+    controller.on_overlay_cancelled()
+    assert state_mgr.state == AppState.IDLE
+

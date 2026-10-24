@@ -126,6 +126,11 @@ class AppController(QObject):
 
     def on_activated(self) -> None:
         """Triggered by global hotkey or tray 'Ask Peachy' menu item."""
+        # If currently in ERROR state, dismiss the error and reset to IDLE for fresh capture
+        if self.state_manager.state == AppState.ERROR:
+            logger.info("Auto-resetting from ERROR state to IDLE on hotkey activation.")
+            self.on_popup_cancelled()
+
         if not self.state_manager.can_activate():
             logger.info("Activation ignored: state is %s (must be IDLE)", self.state_manager.state.value)
             return

@@ -255,6 +255,8 @@ class PeachyApp(QObject):
                 self.popup.pinned = new_settings.pinned
             if hasattr(self.popup, "set_answer_length"):
                 self.popup.set_answer_length(new_settings.answer_length)
+            if self.state_manager.state == AppState.ERROR:
+                self.controller.on_popup_cancelled()
             self.logger.info("Settings updated and applied live.")
         except Exception as exc:
             self.logger.exception("Error applying updated settings: %s", exc)

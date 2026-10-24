@@ -547,8 +547,15 @@ Generated 5 preview screenshots into `docs/screens/`:
   - Click `🎯 Solve`: confirm model returns the direct answer without "Here's the answer!" or chatty preamble.
   - Verify popup title is clean `"peachy"` without "Screen assistant" subtitle.
 
-### Known Bugs
-- None.
+### Known Bugs & Fixes
+- **Fixed (Auto-recovery from ERROR state)**: If an AI request failed (e.g. missing API key, network timeout), the app previously remained stuck in `ERROR` state if the user didn't explicitly click "Cancel" on the popup. Pressing the hotkey would log `Activation ignored: state is ERROR (must be IDLE)`. Now:
+  1. Pressing the global hotkey or tray "Ask Peachy" while in `ERROR` state automatically dismisses the error, resets to `IDLE`, and starts a fresh capture immediately.
+  2. Saving settings in `SettingsWindow` automatically resets an active `ERROR` state to `IDLE`.
+  3. `PeachyPopup` and `ErrorView` now catch `closeEvent` and `Esc` to reliably emit `cancelled` and return to `IDLE`.
+  4. Verified by unit test `test_hotkey_while_in_error_state_auto_resets_and_activates`.
+
+### Total Automated Tests (134/134 pytest tests passed in 3.21s)
+- 134 passed with 100% pass rate across geometry, overlay, hotkey, provider, settings, and FSM lifecycle tests.
 
 
 

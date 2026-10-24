@@ -32,6 +32,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QCursor,
     QFont,
@@ -587,6 +588,12 @@ class ErrorView(QWidget):
     def set_error(self, message: str) -> None:
         self.error_label.setText(message)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            self.cancel_requested.emit()
+        else:
+            super().keyPressEvent(event)
+
 
 class MinimizedPillWidget(QWidget):
     """Floating compact pink pill shown when Peachy is minimized.
@@ -929,3 +936,7 @@ class PeachyPopup(QWidget):
             self.cancelled.emit()
         else:
             super().keyPressEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.cancelled.emit()
+        super().closeEvent(event)
