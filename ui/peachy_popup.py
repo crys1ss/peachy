@@ -244,9 +244,46 @@ class AskView(QWidget):
 
         # Question input field
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("Ask about this...")
+        self.input_field.setPlaceholderText("Ask a question, or pick an action below...")
         self.input_field.setFont(get_app_font(13))
         layout.addWidget(self.input_field)
+
+        # Quick Action Preset Chips row (solid flat colors, zero AI slop)
+        chips_layout = QHBoxLayout()
+        chips_layout.setContentsMargins(0, 0, 0, 0)
+        chips_layout.setSpacing(5)
+
+        self.solve_chip = QPushButton("🎯 Solve")
+        self.solve_chip.setObjectName("presetChip")
+        self.solve_chip.setToolTip("Solve multiple-choice or direct problem")
+        self.solve_chip.clicked.connect(lambda: self._on_preset("Solve this question or problem. State the correct answer or option first, then explain concisely."))
+
+        self.fix_code_chip = QPushButton("💻 Fix Code")
+        self.fix_code_chip.setObjectName("presetChip")
+        self.fix_code_chip.setToolTip("Identify bug/error and provide corrected code")
+        self.fix_code_chip.clicked.connect(lambda: self._on_preset("Identify the bug or error in this code. Provide the root cause and the exact corrected code."))
+
+        self.translate_chip = QPushButton("🌐 Translate")
+        self.translate_chip.setObjectName("presetChip")
+        self.translate_chip.setToolTip("Translate visible text to clear English")
+        self.translate_chip.clicked.connect(lambda: self._on_preset("Translate all text in this image into clear, fluent English."))
+
+        self.summarize_chip = QPushButton("📝 Summarize")
+        self.summarize_chip.setObjectName("presetChip")
+        self.summarize_chip.setToolTip("Summarize key takeaways in bullet points")
+        self.summarize_chip.clicked.connect(lambda: self._on_preset("Summarize the key information and takeaways in this image into concise bullet points."))
+
+        self.copy_text_chip = QPushButton("📋 Copy Text")
+        self.copy_text_chip.setObjectName("presetChip")
+        self.copy_text_chip.setToolTip("Extract all text and copy to clipboard")
+        self.copy_text_chip.clicked.connect(lambda: self.send_requested.emit("Extract all visible text in this image verbatim. Do not add preamble, explanations, or commentary. Output raw text only."))
+
+        chips_layout.addWidget(self.solve_chip)
+        chips_layout.addWidget(self.fix_code_chip)
+        chips_layout.addWidget(self.translate_chip)
+        chips_layout.addWidget(self.summarize_chip)
+        chips_layout.addWidget(self.copy_text_chip)
+        layout.addLayout(chips_layout)
 
         # Bottom row: Hint text + Cancel and Send buttons
         bottom_layout = QHBoxLayout()
@@ -275,6 +312,15 @@ class AskView(QWidget):
         self.send_btn.clicked.connect(self._on_send)
         self.cancel_btn.clicked.connect(self.cancel_requested.emit)
         self.input_field.returnPressed.connect(self._on_send)
+
+    def _on_preset(self, preset_prompt: str) -> None:
+        """Combine user input with selected preset prompt."""
+        user_text = self.input_field.text().strip()
+        if user_text:
+            combined = f"{user_text}\n\n{preset_prompt}"
+        else:
+            combined = preset_prompt
+        self.send_requested.emit(combined)
 
     def set_thumbnail(self, pixmap: QPixmap) -> None:
         if pixmap.isNull():
@@ -351,8 +397,8 @@ class AnswerView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        # First-answer title header: "Here's the answer!"
-        self.header_title = QLabel("Here's the answer!")
+        # First-answer title header: clean "Answer" without conversational fluff
+        self.header_title = QLabel("Answer")
         self.header_title.setFont(get_app_font(13, QFont.Weight.DemiBold))
         self.header_title.setStyleSheet(f"color: {theme.accent}; margin-bottom: 2px;")
         layout.addWidget(self.header_title)
@@ -430,7 +476,10 @@ class AnswerView(QWidget):
     def set_answer(self, markdown_text: str, question: str = "", is_first_answer: bool = True) -> None:
         """Display answer with custom formatted markdown code blocks."""
         if is_first_answer:
-            self.header_title.setText("Here's the answer!")
+            if "Extract all visible text in this image verbatim" in question:
+                self.header_title.setText("Extracted Text (Copied to Clipboard)")
+            else:
+                self.header_title.setText("Answer")
             self.header_title.show()
         else:
             self.header_title.hide()
@@ -690,19 +739,13 @@ class PeachyPopup(QWidget):
         self.sparkle_icon = SparkleWidget(size=22, parent=self.header)
         header_layout.addWidget(self.sparkle_icon)
 
-        # Titles
+        # Title (clean, no marketing slop)
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
         self.title_label = QLabel("peachy")
         self.title_label.setObjectName("headerTitle")
         self.title_label.setFont(get_app_font(15, QFont.Weight.DemiBold))
-
-        self.subtitle_label = QLabel("Screen assistant")
-        self.subtitle_label.setObjectName("headerSubtitle")
-        self.subtitle_label.setFont(get_app_font(11))
-
         title_box.addWidget(self.title_label)
-        title_box.addWidget(self.subtitle_label)
         header_layout.addLayout(title_box)
 
         header_layout.addStretch()

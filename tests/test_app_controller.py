@@ -299,3 +299,28 @@ def test_hotkey_pressed_during_selecting_is_ignored(controller_setup, qtbot):
 
     controller.on_overlay_cancelled()
     assert state_mgr.state == AppState.IDLE
+
+
+def test_copy_text_auto_clipboard_copy(controller_setup, qtbot):
+    """Verify Copy Text requests automatically copy raw extracted text to system clipboard."""
+    controller, provider, popup, state_mgr = controller_setup
+    from PySide6.QtGui import QGuiApplication
+
+    provider.response_text = "RAW EXTRACTED OCR TEXT FROM SCREEN"
+
+    state_mgr.transition_to(AppState.CAPTURING)
+    state_mgr.transition_to(AppState.SELECTING)
+
+    dummy_image = QImage(100, 50, QImage.Format.Format_RGB32)
+    controller.on_crop_confirmed(dummy_image)
+    assert state_mgr.state == AppState.ASKING
+
+    ocr_prompt = "Extract all visible text in this image verbatim. Do not add preamble, explanations, or commentary. Output raw text only."
+    controller.on_send_question(ocr_prompt)
+
+    qtbot.waitUntil(lambda: state_mgr.state == AppState.ANSWERING, timeout=2000)
+
+    clipboard = QGuiApplication.clipboard()
+    assert clipboard is not None
+    assert clipboard.text() == "RAW EXTRACTED OCR TEXT FROM SCREEN"
+    assert popup.answer_view.header_title.text() == "Extracted Text (Copied to Clipboard)"

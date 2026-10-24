@@ -249,6 +249,27 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
         color: {theme.accent};
     }}
 
+    /* Action Preset Chips in AskView (solid flat colors) */
+    QPushButton#presetChip {{
+        background-color: {theme.surface};
+        color: {theme.text};
+        border: 1px solid {theme.border};
+        border-radius: 9px;
+        padding: 5px 9px;
+        font-size: 11px;
+        font-weight: 500;
+    }}
+
+    QPushButton#presetChip:hover {{
+        background-color: {theme.pill_bg};
+        border-color: {theme.accent};
+        color: {theme.accent};
+    }}
+
+    QPushButton#presetChip:pressed {{
+        background-color: {theme.border};
+    }}
+
     /* Answer markdown area */
     QTextBrowser#answerBrowser {{
         background-color: transparent;

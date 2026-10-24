@@ -7,6 +7,7 @@ through the StateManager FSM.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from pathlib import Path
@@ -66,7 +67,10 @@ class AppController(QObject):
         self._current_history: List[Any] = []
         self._last_question: str = ""
         self._saved_foreground_hwnd: int = 0
+        self._saved_foreground_title: str = ""
         self._is_new_screenshot_flow: bool = False
+        self._debug_crop_paths: List[Path] = []
+        atexit.register(self._cleanup_debug_crops)
 
         # Hard timeout timer (45s)
         self._hard_timeout_timer = QTimer(self)
@@ -126,9 +130,14 @@ class AppController(QObject):
             logger.info("Activation ignored: state is %s (must be IDLE)", self.state_manager.state.value)
             return
 
-        # 1. Record foreground HWND to restore focus when finished
+        # 1. Record foreground HWND and window title to restore focus and provide context
         self._saved_foreground_hwnd = win32.get_foreground_window()
-        logger.info("Peachy activated. Saved foreground HWND: %d", self._saved_foreground_hwnd)
+        self._saved_foreground_title = win32.get_window_text(self._saved_foreground_hwnd)
+        logger.info(
+            "Peachy activated. Saved foreground HWND: %d ('%s')",
+            self._saved_foreground_hwnd,
+            self._saved_foreground_title,
+        )
 
         # 2. Transition IDLE -> CAPTURING
         if not self.state_manager.request_activation():
@@ -176,6 +185,7 @@ class AppController(QObject):
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             crop_path = temp_dir / f"crop_{timestamp}.png"
             crop.save(str(crop_path), "PNG")
+            self._debug_crop_paths.append(crop_path)
             logger.info("Debug crop saved to %s", crop_path)
 
         # Convert QImage to PNG bytes
@@ -293,6 +303,13 @@ class AppController(QObject):
         # Update conversation history
         self._current_history = result.history
 
+        # If this was an OCR Copy Text request, automatically copy raw text to clipboard
+        if "Extract all visible text in this image verbatim" in self._last_question:
+            clipboard = QGuiApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(result.text.strip())
+                logger.info("Extracted text automatically copied to clipboard (%d chars)", len(result.text))
+
         # Transition THINKING -> ANSWERING
         self.state_manager.transition_to(AppState.ANSWERING)
         self.popup.show_answer(result.text, question=self._last_question)
@@ -375,9 +392,20 @@ class AppController(QObject):
         # 4. Return FSM to IDLE
         self.state_manager.reset_to_idle()
 
+    def _cleanup_debug_crops(self) -> None:
+        """Delete debug crop files on exit to avoid persisting screen captures."""
+        for path in self._debug_crop_paths:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        self._debug_crop_paths.clear()
+
     def shutdown(self) -> None:
         """Cancel pending tasks, stop active worker threads, and ensure clean shutdown."""
         logger.info("AppController shutting down...")
+        self._cleanup_debug_crops()
         self._hard_timeout_timer.stop()
         if self._active_worker:
             self._active_worker.cancel()

@@ -41,8 +41,7 @@ from config.settings import load_settings
 logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTION = (
-    "You are Peachy, a concise screen assistant. Answer the user's question about the image. "
-    "If there is no question, work out what the content is and give the most useful short response: "
+    "You are Peachy, an ultra-direct, concise screen utility. Answer the user's question about the image with zero conversational filler, preamble, pleasantries, or sycophancy (never say 'Sure!', 'Here is...', 'Hope this helps', or 'Certainly'). Give the direct answer immediately: "
     "multiple choice -> the correct option first, then one or two lines why; "
     "code or error -> cause and fix; "
     "chart or table -> the key takeaway; "

@@ -174,10 +174,6 @@ class SelectionOverlay(QWidget):
             if len(stroke_pts) >= 3:
                 union_region = union_region.united(QRegion(QPolygon(stroke_pts)))
 
-        has_active = len(self.current_stroke_logical) >= 3
-        if has_active:
-            union_region = union_region.united(QRegion(QPolygon(self.current_stroke_logical)))
-
         # Dimming outside selection
         if union_region.isEmpty():
             painter.fillRect(self.rect(), COLOR_DIM)
@@ -187,7 +183,7 @@ class SelectionOverlay(QWidget):
             painter.fillRect(self.rect(), COLOR_DIM)
             painter.setClipping(False)
 
-        # Paint completed strokes (filled tint + smooth 3px pink border with round caps)
+        # Paint completed strokes (filled tint + smooth 3px pink border with round caps and joins)
         pen = QPen(
             COLOR_BORDER,
             3,
@@ -205,7 +201,7 @@ class SelectionOverlay(QWidget):
                 path.closeSubpath()
                 painter.drawPath(path)
 
-        # Paint active in-progress stroke (line only, no fill yet)
+        # Paint active in-progress stroke (smooth line only, no fill yet)
         if len(self.current_stroke_logical) >= 2:
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -215,12 +211,10 @@ class SelectionOverlay(QWidget):
                 path.lineTo(pt)
             painter.drawPath(path)
 
-        # Paint dimension label for bounding box of all strokes
+        # Paint dimension label for bounding box of completed strokes
         all_physical = []
         for s in self.completed_strokes_physical:
             all_physical.extend(s)
-        if self.current_stroke_physical:
-            all_physical.extend(self.current_stroke_physical)
 
         if all_physical:
             _, _, bw, bh = polygon_bounding_box(all_physical)
@@ -228,7 +222,6 @@ class SelectionOverlay(QWidget):
                 all_logical = []
                 for s in self.completed_strokes_logical:
                     all_logical.extend(s)
-                all_logical.extend(self.current_stroke_logical)
                 xs = [p.x() for p in all_logical]
                 ys = [p.y() for p in all_logical]
                 bounding_rect = QRect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
@@ -278,9 +271,9 @@ class SelectionOverlay(QWidget):
     def _paint_hint_chip(self, painter: QPainter) -> None:
         """Draw top centered hint badge showing mode and keyboard controls."""
         hint_text = (
-            "Draw around what you want. Esc cancel, Tab switch mode, Backspace clear."
+            "Freehand: draw around what you want. Esc cancel, Tab switch mode, Backspace clear."
             if self.manager.mode == "freehand"
-            else "Drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."
+            else "Rectangle: drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."
         )
 
         font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)

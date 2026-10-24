@@ -101,7 +101,7 @@ def test_view_switching_lifecycle(qtbot):
     assert popup.stack.currentIndex() == ViewIndex.ANSWER
     assert "Result" in popup.answer_view.browser.toPlainText()
     assert "bold" in popup.answer_view.browser.toPlainText()
-    assert popup.answer_view.header_title.text() == "Here's the answer!"
+    assert popup.answer_view.header_title.text() == "Answer"
 
     # 4. Error View
     popup.show_error("Network connection failed.")
@@ -210,3 +210,54 @@ def test_set_answer_length(qtbot):
     popup.set_answer_length("short")
     assert popup._answer_length == "short"
     assert popup.chip_btn.text() == "Short"
+
+
+def test_preset_action_chips_dispatch_custom_prompts(qtbot):
+    """Verify Quick Action Preset chips dispatch appropriate prompts."""
+    popup = PeachyPopup()
+    qtbot.addWidget(popup)
+
+    emitted_prompts = []
+    popup.send_question.connect(emitted_prompts.append)
+
+    # 1. Solve chip
+    popup.ask_view.solve_chip.click()
+    assert len(emitted_prompts) == 1
+    assert "Solve this question or problem" in emitted_prompts[-1]
+
+    # 2. Fix Code chip
+    popup.ask_view.fix_code_chip.click()
+    assert len(emitted_prompts) == 2
+    assert "Identify the bug or error in this code" in emitted_prompts[-1]
+
+    # 3. Translate chip
+    popup.ask_view.translate_chip.click()
+    assert len(emitted_prompts) == 3
+    assert "Translate all text in this image" in emitted_prompts[-1]
+
+    # 4. Summarize chip
+    popup.ask_view.summarize_chip.click()
+    assert len(emitted_prompts) == 4
+    assert "Summarize the key information" in emitted_prompts[-1]
+
+    # 5. Copy Text chip
+    popup.ask_view.copy_text_chip.click()
+    assert len(emitted_prompts) == 5
+    assert "Extract all visible text in this image verbatim" in emitted_prompts[-1]
+
+    # 6. Combined with user text
+    popup.ask_view.input_field.setText("Line 42 has a NullPointerException")
+    popup.ask_view.fix_code_chip.click()
+    assert len(emitted_prompts) == 6
+    assert "Line 42 has a NullPointerException" in emitted_prompts[-1]
+    assert "Identify the bug or error in this code" in emitted_prompts[-1]
+
+
+def test_ocr_header_title_display(qtbot):
+    """Verify OCR questions display 'Extracted Text (Copied to Clipboard)' title."""
+    popup = PeachyPopup()
+    qtbot.addWidget(popup)
+
+    ocr_q = "Extract all visible text in this image verbatim. Do not add preamble, explanations, or commentary. Output raw text only."
+    popup.show_answer("Extracted raw text from image", question=ocr_q)
+    assert popup.answer_view.header_title.text() == "Extracted Text (Copied to Clipboard)"

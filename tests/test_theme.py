@@ -66,3 +66,12 @@ def test_card_stylesheet_generation():
     qss_dark = get_card_stylesheet(DARK_THEME)
     assert "QFrame#cardContainer" in qss_dark
     assert "#2A2328" in qss_dark
+
+
+def test_theme_no_gradients_and_solid_preset_chips():
+    """Verify stylesheets strictly use solid flat colors with zero gradients."""
+    for theme in [LIGHT_THEME, DARK_THEME]:
+        qss = get_card_stylesheet(theme)
+        assert "presetChip" in qss
+        assert "gradient" not in qss.lower()
+        assert "qlineargradient" not in qss.lower()

@@ -43,7 +43,14 @@ def test_codebase_contains_no_hardcoded_keys():
     key_pattern = re.compile("".join(["A", "I", "z", "a"]) + r"[0-9A-Za-z\-_]{35}")
 
     for py_file in root_dir.rglob("*.py"):
-        if ".git" in py_file.parts or ".pytest_cache" in py_file.parts:
+        if (
+            ".git" in py_file.parts
+            or ".pytest_cache" in py_file.parts
+            or ".venv" in py_file.parts
+            or "venv" in py_file.parts
+            or "dist" in py_file.parts
+            or "build" in py_file.parts
+        ):
             continue
 
         content = py_file.read_text(encoding="utf-8", errors="ignore")

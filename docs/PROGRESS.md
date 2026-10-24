@@ -432,8 +432,8 @@ Generated 5 preview screenshots into `docs/screens/`:
    - `Freehand` mode added as new default; legacy `Rectangle` mode preserved with 100% backwards compatibility.
    - `Tab` key toggles between Freehand and Rectangle during selection across all monitor overlays.
    - Top-centered rounded pill badge on each overlay displays active mode and controls:
-     - Freehand: `"Draw around what you want. Esc cancel, Tab switch mode, Backspace clear."`
-     - Rectangle: `"Drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."`
+     - Freehand: `"Freehand: draw around what you want. Esc cancel, Tab switch mode, Backspace clear."`
+     - Rectangle: `"Rectangle: drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."`
 2. **Smooth Live Drawing & Optimization**:
    - 3 px smooth pink line (`#F472B6`, round caps and joins) rendered with `QPainterPath`.
    - Points captured in physical pixels with $\ge 2.0$ px Euclidean distance filtering.
@@ -455,8 +455,11 @@ Generated 5 preview screenshots into `docs/screens/`:
 7. **Settings UI & Persistence**:
    - Added `selection_mode` (`"freehand"` / `"rectangle"`) and `outside_shape` (`"blank"` / `"keep"`) to `Settings` in [config/settings.py](file:///c:/Users/TANAY/Downloads/Peachy/config/settings.py).
    - Added "Selection & Capture" section to [ui/settings_window.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/settings_window.py) with radio controls for mode and outside shape.
+8. **Diagnostic Verification & Safe Debugging**:
+   - [scripts/freehand_check.py](file:///c:/Users/TANAY/Downloads/Peachy/scripts/freehand_check.py) created: generates synthetic quadrant image, applies triangle stroke mask, saves PNG, and verifies inside/outside pixel colors.
+   - `PEACHY_DEBUG_SAVE_CROP=1` support with automatic deletion of debug files on application exit via `atexit` and `AppController.shutdown()`.
 
-### Verified by Automated Tests (128/128 pytest tests passed in 3.13s)
+### Verified by Automated Tests (133/133 pytest tests passed in 33.11s)
 - `tests/test_geometry.py`:
   - `test_add_point_if_far_enough_filtering`: Point filtering at 2.0 px Euclidean distance.
   - `test_close_path`: Auto-connecting endpoints.
@@ -481,19 +484,68 @@ Generated 5 preview screenshots into `docs/screens/`:
 - `tests/test_app_controller.py`:
   - `test_hotkey_pressed_during_selecting_is_ignored`: Activation while in SELECTING ignored.
 - `tests/test_settings.py` & `tests/test_settings_window.py`:
+  - `test_default_mode_is_freehand_when_settings_missing_or_corrupt_or_invalid`: Fallback to Freehand and Blank on missing/corrupt/invalid files.
   - New selection settings fields defaults, persistence, and UI control interactions.
 
 ### Needs Manual Check (Physical User Testing)
 - [ ] Run `python app.py`: Press `Ctrl+Shift+Space`:
-  - Confirm top hint chip says: `"Draw around what you want. Esc cancel, Tab switch mode, Backspace clear."`
+  - Confirm top hint chip says: `"Freehand: draw around what you want. Esc cancel, Tab switch mode, Backspace clear."`
   - Draw a freehand loop: confirm smooth 3 px pink line with round caps renders without latency.
   - Release mouse: confirm loop closes automatically with light pink tint inside, unfreezes screen, and Ask popup appears.
 - [ ] Press `Ctrl+Shift+Space`, press `Tab`:
-  - Confirm top hint chip switches to: `"Drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."`
+  - Confirm top hint chip switches to: `"Rectangle: drag to select a rectangle. Esc cancel, Tab switch mode, Backspace clear."`
   - Drag a box: confirm rectangle selection functions normally.
   - Press `Tab` again: confirm it switches back to Freehand mode.
 - [ ] Multi-Stroke: Press `Ctrl+Shift+Space`, draw shape 1, hold `Shift` on release (selection stays open). Draw shape 2 on same screen. Press `Enter`: confirm union of both shapes is captured.
 - [ ] In Settings, switch "Outside shape" to "Keep", draw a freehand shape: confirm entire bounding box is preserved without white blanking.
+
+### Known Bugs
+- None.
+
+---
+
+## Action Presets, Instant OCR & Zero-Slop Update
+
+### What Works & Is Done
+1. **Quick Action Preset Chips ([ui/peachy_popup.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/peachy_popup.py))**:
+   - Added 5 flat, zero-gradient action chips directly to `AskView`:
+     - 🎯 **Solve**: Auto-generates prompt to state the correct answer/option first, then explain concisely.
+     - 💻 **Fix Code**: Identifies bugs/errors, states root cause, and outputs drop-in code fix.
+     - 🌐 **Translate**: Translates visible text into fluent English with zero commentary.
+     - 📝 **Summarize**: Summarizes key takeaways into concise bullet points.
+     - 📋 **Copy Text**: Verbatim text extraction without commentary.
+   - Combines user-typed context with preset prompt if input field is populated.
+2. **Instant OCR & Clipboard Auto-Copy ([core/app_controller.py](file:///c:/Users/TANAY/Downloads/Peachy/core/app_controller.py))**:
+   - When a Copy Text request completes, `AppController` automatically populates `QGuiApplication.clipboard()` with the raw extracted text.
+   - Answer view automatically displays title *"Extracted Text (Copied to Clipboard)"*.
+3. **Removal of AI Slop**:
+   - `AnswerView`: Replaced cartoonish *"Here's the answer!"* heading with direct, professional title *"Answer"*.
+   - Header Bar: Removed generic *"Screen assistant"* subtitle to de-clutter branding.
+   - System Prompt ([ai/gemini_provider.py](file:///c:/Users/TANAY/Downloads/Peachy/ai/gemini_provider.py)): Enforces zero conversational filler, pleasantries, sycophancy, or preamble (bans "Sure!", "Here is...", "Hope this helps").
+4. **Zero-Gradient Flat Aesthetic ([ui/theme.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/theme.py))**:
+   - Guaranteed 100% solid flat surfaces and buttons with crisp borders.
+   - Verified 0 CSS gradients across the entire stylesheet.
+5. **Foreground Window Context ([core/win32.py](file:///c:/Users/TANAY/Downloads/Peachy/core/win32.py))**:
+   - Added `GetWindowTextLengthW` and `GetWindowTextW` Win32 ctypes wrappers with `argtypes` and `restype`.
+   - `on_activated` retrieves active window title (`self._saved_foreground_title`).
+
+### Verified by Automated Tests (132/132 pytest tests passed in 3.26s)
+- `tests/test_peachy_popup.py`:
+  - `test_preset_action_chips_dispatch_custom_prompts`: Verified all 5 action chips and user text combination.
+  - `test_ocr_header_title_display`: Verified OCR question header adaptation.
+  - `test_view_switching_lifecycle`: Verified "Answer" header title.
+- `tests/test_app_controller.py`:
+  - `test_copy_text_auto_clipboard_copy`: Verified automatic clipboard population on OCR completion.
+- `tests/test_theme.py`:
+  - `test_theme_no_gradients_and_solid_preset_chips`: Verified zero gradients and solid presetChip styling.
+- All 128 prior tests continue to pass without regression.
+
+### Needs Manual Check (Physical User Testing)
+- [ ] Press `Ctrl+Shift+Space`, select text or a problem:
+  - Confirm the 5 preset chips (`🎯 Solve`, `💻 Fix Code`, `🌐 Translate`, `📝 Summarize`, `📋 Copy Text`) appear neatly under the input field.
+  - Click `📋 Copy Text`: confirm text is extracted and automatically copied to clipboard. Press `Ctrl+V` in Notepad to verify.
+  - Click `🎯 Solve`: confirm model returns the direct answer without "Here's the answer!" or chatty preamble.
+  - Verify popup title is clean `"peachy"` without "Screen assistant" subtitle.
 
 ### Known Bugs
 - None.

@@ -60,6 +60,20 @@ _user32.SetForegroundWindow.argtypes = [
 ]
 _user32.SetForegroundWindow.restype = wintypes.BOOL
 
+# int GetWindowTextLengthW(HWND hWnd);
+_user32.GetWindowTextLengthW.argtypes = [
+    wintypes.HWND,
+]
+_user32.GetWindowTextLengthW.restype = ctypes.c_int
+
+# int GetWindowTextW(HWND hWnd, LPWSTR lpString, int nMaxCount);
+_user32.GetWindowTextW.argtypes = [
+    wintypes.HWND,
+    wintypes.LPWSTR,
+    ctypes.c_int,
+]
+_user32.GetWindowTextW.restype = ctypes.c_int
+
 
 def get_last_error() -> int:
     """Return the last Win32 error code for the calling thread."""
@@ -205,6 +219,20 @@ def set_foreground_window(hwnd: int) -> bool:
     if not hwnd:
         return False
     return bool(_user32.SetForegroundWindow(wintypes.HWND(hwnd)))
+
+
+def get_window_text(hwnd: int) -> str:
+    """Retrieve the text of the specified window's title bar (if it has one)."""
+    if not hwnd:
+        return ""
+    length = _user32.GetWindowTextLengthW(wintypes.HWND(hwnd))
+    if length <= 0:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    copied = _user32.GetWindowTextW(wintypes.HWND(hwnd), buffer, length + 1)
+    if copied <= 0:
+        return ""
+    return buffer.value
 
 
 def set_windows_hook(id_hook: int, proc: Any, hmod: int = 0, thread_id: int = 0) -> Optional[int]:

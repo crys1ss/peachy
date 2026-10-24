@@ -101,3 +101,29 @@ def test_unknown_fields_in_json_are_ignored(tmp_path: Path):
     s = load_settings(settings_file)
     assert s.hotkey == "Ctrl+Shift+Space"
     assert not hasattr(s, "unknown_future_field")
+
+
+def test_default_mode_is_freehand_when_settings_missing_or_corrupt_or_invalid(tmp_path: Path):
+    """Verify default mode is freehand when settings file is missing, corrupt, or has invalid value."""
+    # 1. Missing file
+    s_missing = load_settings(tmp_path / "nonexistent.json")
+    assert s_missing.selection_mode == "freehand"
+    assert s_missing.outside_shape == "blank"
+
+    # 2. Corrupt file
+    corrupt_file = tmp_path / "corrupt.json"
+    corrupt_file.write_text("{invalid json", encoding="utf-8")
+    s_corrupt = load_settings(corrupt_file)
+    assert s_corrupt.selection_mode == "freehand"
+    assert s_corrupt.outside_shape == "blank"
+
+    # 3. Invalid field values in valid JSON fall back to defaults
+    invalid_file = tmp_path / "invalid_vals.json"
+    invalid_file.write_text(
+        json.dumps({"selection_mode": "circular", "outside_shape": "transparent"}),
+        encoding="utf-8",
+    )
+    s_invalid = load_settings(invalid_file)
+    assert s_invalid.selection_mode == "freehand"
+    assert s_invalid.outside_shape == "blank"
+
