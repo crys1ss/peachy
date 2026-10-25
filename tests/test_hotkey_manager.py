@@ -84,3 +84,61 @@ def test_hotkey_triggered_signal(qapp):
     assert len(triggered_count) == 1
 
     hm.cleanup()
+
+
+def test_history_hotkey_registration_and_failure(qapp, monkeypatch):
+    """Test history hotkey registration success and failure paths with win32 mocked."""
+    mock_reg = MagicMock(return_value=True)
+    monkeypatch.setattr("core.win32.register_hotkey", mock_reg)
+
+    hm = HotkeyManager()
+    failed_signals = []
+    hm.history_registration_failed.connect(failed_signals.append)
+
+    assert hm.register_history("Ctrl+Shift+H") is True
+    assert hm.is_history_registered is True
+    assert hm.current_history_shortcut == "Ctrl+Shift+H"
+    assert len(failed_signals) == 0
+
+    # Failure path
+    monkeypatch.setattr("core.win32.register_hotkey", MagicMock(return_value=False))
+    assert hm.register_history("Ctrl+Alt+H") is False
+    assert hm.is_history_registered is False
+    assert len(failed_signals) == 1
+    assert "Failed to register history hotkey" in failed_signals[0]
+
+    hm.cleanup()
+
+
+def test_history_hotkey_pause_and_cleanup(qapp, monkeypatch):
+    """Test that pause and cleanup unregister both hotkeys."""
+    mock_reg = MagicMock(return_value=True)
+    mock_unreg = MagicMock(return_value=True)
+    monkeypatch.setattr("core.win32.register_hotkey", mock_reg)
+    monkeypatch.setattr("core.win32.unregister_hotkey", mock_unreg)
+
+    hm = HotkeyManager()
+    hm.register("Ctrl+Shift+Space")
+    hm.register_history("Ctrl+Shift+H")
+    assert hm.is_registered is True
+    assert hm.is_history_registered is True
+
+    # Pause unregisters both
+    hm.set_paused(True)
+    assert hm.is_paused is True
+    assert hm.is_registered is False
+    assert hm.is_history_registered is False
+    assert mock_unreg.call_count == 2
+
+    # Unpause re-registers both
+    mock_reg.reset_mock()
+    hm.set_paused(False)
+    assert hm.is_paused is False
+    assert hm.is_registered is True
+    assert hm.is_history_registered is True
+    assert mock_reg.call_count == 2
+
+    # Cleanup unregisters both
+    mock_unreg.reset_mock()
+    hm.cleanup()
+    assert mock_unreg.call_count == 2

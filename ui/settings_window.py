@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -55,6 +56,7 @@ from config.settings import (
     set_launch_at_startup,
 )
 from core.hotkey_manager import parse_shortcut
+from history.store import HistoryStore
 from ui import theme
 
 logger = logging.getLogger(__name__)
@@ -189,12 +191,14 @@ class SettingsWindow(QDialog):
         settings: Optional[Settings] = None,
         hotkey_manager: Optional[Any] = None,
         double_tap_hook: Optional[Any] = None,
+        store: Optional[HistoryStore] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self.settings = settings or load_settings()
         self.hotkey_manager = hotkey_manager
         self.double_tap_hook = double_tap_hook
+        self.store = store or HistoryStore()
         self.theme_tokens = theme.get_theme()
         self._tester_thread: Optional[ApiKeyTesterThread] = None
 
@@ -204,7 +208,7 @@ class SettingsWindow(QDialog):
 
     def _init_window(self) -> None:
         self.setWindowTitle("Peachy Settings")
-        self.setFixedSize(460, 770)
+        self.resize(480, 840)
         self.setFont(theme.get_app_font(13))
         self.setStyleSheet(self._generate_stylesheet())
 
@@ -290,10 +294,14 @@ class SettingsWindow(QDialog):
         layout.addLayout(header_layout)
 
         # 1. Shortcut Section
-        shortcut_label = QLabel("Global Shortcut")
+        shortcut_label = QLabel("Global Shortcuts")
         shortcut_label.setFont(theme.get_app_font(13, bold=True))
         layout.addWidget(shortcut_label)
 
+        # Capture Hotkey
+        cap_lbl = QLabel("Screen Capture:")
+        cap_lbl.setFont(theme.get_app_font(12))
+        layout.addWidget(cap_lbl)
         sc_row = QHBoxLayout()
         self.shortcut_button = ShortcutRecorderButton(self.settings.hotkey)
         self.shortcut_button.shortcut_recorded.connect(self._on_shortcut_recorded)
@@ -303,6 +311,20 @@ class SettingsWindow(QDialog):
         self.shortcut_status_label = QLabel("")
         self.shortcut_status_label.setStyleSheet("color: #EF4444; font-size: 11px;")
         layout.addWidget(self.shortcut_status_label)
+
+        # History Hotkey
+        hist_lbl = QLabel("Chat History:")
+        hist_lbl.setFont(theme.get_app_font(12))
+        layout.addWidget(hist_lbl)
+        hist_sc_row = QHBoxLayout()
+        self.history_shortcut_button = ShortcutRecorderButton(getattr(self.settings, "history_hotkey", "Ctrl+Shift+H"))
+        self.history_shortcut_button.shortcut_recorded.connect(self._on_history_shortcut_recorded)
+        hist_sc_row.addWidget(self.history_shortcut_button)
+        layout.addLayout(hist_sc_row)
+
+        self.history_shortcut_status_label = QLabel("")
+        self.history_shortcut_status_label.setStyleSheet("color: #EF4444; font-size: 11px;")
+        layout.addWidget(self.history_shortcut_status_label)
 
         # 2. Double Tap C Section
         self.double_tap_check = QCheckBox("Enable Double-tap 'C' activation")
@@ -424,7 +446,35 @@ class SettingsWindow(QDialog):
         self.startup_check = QCheckBox("Launch Peachy at Windows startup")
         layout.addWidget(self.startup_check)
 
-        # 5. Privacy Notice Card
+        # Divider
+        layout.addWidget(self._create_divider())
+
+        # 6. Chat History Section
+        history_title = QLabel("Chat History")
+        history_title.setFont(theme.get_app_font(13, bold=True))
+        layout.addWidget(history_title)
+
+        self.save_history_check = QCheckBox("Save chat history locally on this PC")
+        layout.addWidget(self.save_history_check)
+
+        self.save_thumbnails_check = QCheckBox("Save 240px thumbnails with conversations")
+        self.save_thumbnails_check.setStyleSheet("margin-left: 20px;")
+        layout.addWidget(self.save_thumbnails_check)
+
+        clear_row = QHBoxLayout()
+        self.clear_history_btn = QPushButton("Clear All History")
+        self.clear_history_btn.setObjectName("secondaryButton")
+        self.clear_history_btn.setToolTip("Delete all saved conversations and vacuum database")
+        self.clear_history_btn.clicked.connect(self._on_clear_history)
+        clear_row.addWidget(self.clear_history_btn)
+        clear_row.addStretch()
+        layout.addLayout(clear_row)
+
+        self.clear_status_label = QLabel("")
+        self.clear_status_label.setStyleSheet("font-size: 11px;")
+        layout.addWidget(self.clear_status_label)
+
+        # 7. Privacy Notice Card
         privacy_frame = QFrame()
         privacy_frame.setStyleSheet(f"""
             QFrame {{
@@ -442,7 +492,7 @@ class SettingsWindow(QDialog):
         privacy_text = QLabel(
             "Peachy only looks at your screen when you press the shortcut. "
             "It sends only the area you select, and only when you press Send. "
-            "Nothing is recorded or saved."
+            "History stays on this PC, is never uploaded, and the selected screen area is still only sent to Gemini when I press Send."
         )
         privacy_text.setWordWrap(True)
         privacy_text.setFont(theme.get_app_font(11))
@@ -537,6 +587,13 @@ class SettingsWindow(QDialog):
         # Windows Startup
         self.startup_check.setChecked(is_launch_at_startup_enabled())
 
+        # History settings
+        self.history_shortcut_button.set_shortcut(getattr(self.settings, "history_hotkey", "Ctrl+Shift+H"))
+        self.save_history_check.setChecked(getattr(self.settings, "save_history", False))
+        self.save_thumbnails_check.setChecked(getattr(self.settings, "save_thumbnails", False))
+        self.save_thumbnails_check.setEnabled(getattr(self.settings, "save_history", False))
+        self.save_history_check.toggled.connect(self.save_thumbnails_check.setEnabled)
+
     def _toggle_key_visibility(self) -> None:
         if self.key_input.echoMode() == QLineEdit.EchoMode.Password:
             self.key_input.setEchoMode(QLineEdit.EchoMode.Normal)
@@ -547,6 +604,22 @@ class SettingsWindow(QDialog):
 
     def _on_shortcut_recorded(self, new_shortcut: str) -> None:
         self.shortcut_status_label.setText("")
+
+    def _on_history_shortcut_recorded(self, new_shortcut: str) -> None:
+        self.history_shortcut_status_label.setText("")
+
+    def _on_clear_history(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Clear All History",
+            "Are you sure you want to delete all chat history? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.store.clear_all()
+            self.clear_status_label.setText("✓ All chat history deleted.")
+            self.clear_status_label.setStyleSheet("color: #10B981; font-size: 11px;")
 
     def _on_double_tap_toggled(self, checked: bool) -> None:
         self.interval_slider.setEnabled(checked)
@@ -600,6 +673,27 @@ class SettingsWindow(QDialog):
         else:
             self.settings.hotkey = new_shortcut
 
+        # Try to register history shortcut if changed and manager supports it
+        new_hist_shortcut = self.history_shortcut_button.current_shortcut.strip()
+        old_hist_shortcut = getattr(self.settings, "history_hotkey", "Ctrl+Shift+H")
+
+        if (
+            self.hotkey_manager
+            and hasattr(self.hotkey_manager, "register_history")
+            and new_hist_shortcut != old_hist_shortcut
+        ):
+            hist_registered = self.hotkey_manager.register_history(new_hist_shortcut)
+            if not hist_registered:
+                self.history_shortcut_status_label.setText(
+                    f"Conflict: '{new_hist_shortcut}' is already in use by another app. Kept '{old_hist_shortcut}'."
+                )
+                self.history_shortcut_button.set_shortcut(old_hist_shortcut)
+                return
+            else:
+                self.settings.history_hotkey = new_hist_shortcut
+        else:
+            self.settings.history_hotkey = new_hist_shortcut
+
         # Update Settings dataclass
         self.settings.double_tap_enabled = self.double_tap_check.isChecked()
         self.settings.double_tap_interval_ms = self.interval_slider.value()
@@ -609,6 +703,10 @@ class SettingsWindow(QDialog):
         self.settings.pinned = self.pinned_check.isChecked()
         self.settings.popup_position = "last_used" if self.pos_last.isChecked() else "near_selection"
         self.settings.launch_at_startup = self.startup_check.isChecked()
+        self.settings.save_history = self.save_history_check.isChecked()
+        self.settings.save_thumbnails = self.save_thumbnails_check.isChecked()
+        if self.settings.save_history:
+            self.settings.save_history_prompted = True
 
         # 1. Save Settings to settings.json
         save_settings(self.settings)

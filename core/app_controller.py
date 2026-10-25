@@ -27,6 +27,8 @@ from core import win32
 from core.hotkey_manager import HotkeyManager
 from core.state_manager import AppState, StateManager
 from core.worker import GeminiWorker
+from history.store import HistoryStore, create_thumbnail, generate_title
+from history.worker import HistoryDbWorker
 from ui.peachy_popup import PeachyPopup
 from ui.tray_manager import TrayManager
 
@@ -47,6 +49,8 @@ class AppController(QObject):
         popup: PeachyPopup,
         provider: Optional[BaseAIProvider] = None,
         settings: Optional[Settings] = None,
+        history_store: Optional[HistoryStore] = None,
+        history_window: Optional[Any] = None,
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
@@ -57,6 +61,8 @@ class AppController(QObject):
         self.popup = popup
         self.provider = provider or GeminiProvider()
         self.settings = settings or load_settings()
+        self.history_store = history_store or HistoryStore()
+        self.history_window = history_window
         self.overlay_manager.mode = getattr(self.settings, "selection_mode", "freehand")
         self.overlay_manager.outside_shape = getattr(self.settings, "outside_shape", "blank")
 
@@ -64,11 +70,15 @@ class AppController(QObject):
         self._current_request_id: int = 0
         self._active_worker: Optional[GeminiWorker] = None
         self._current_image_bytes: Optional[bytes] = None
+        self._first_image_bytes: Optional[bytes] = None
+        self._first_question: str = ""
         self._current_history: List[Any] = []
+        self._current_conversation_id: Optional[int] = None
         self._last_question: str = ""
         self._saved_foreground_hwnd: int = 0
         self._saved_foreground_title: str = ""
         self._is_new_screenshot_flow: bool = False
+        self._db_worker: Optional[HistoryDbWorker] = None
         self._debug_crop_paths: List[Path] = []
         atexit.register(self._cleanup_debug_crops)
 
@@ -97,6 +107,18 @@ class AppController(QObject):
         self.popup.cancelled.connect(self.on_popup_cancelled)
         if hasattr(self.popup, "length_changed"):
             self.popup.length_changed.connect(self._on_length_changed)
+        if hasattr(self.popup, "opt_in_choice"):
+            self.popup.opt_in_choice.connect(self.on_opt_in_choice)
+        if hasattr(self.popup, "history_requested"):
+            self.popup.history_requested.connect(self.open_history)
+
+        # History and Tray
+        if hasattr(self.tray_manager, "history_requested"):
+            self.tray_manager.history_requested.connect(self.open_history)
+        if hasattr(self.hotkey_manager, "history_hotkey_triggered"):
+            self.hotkey_manager.history_hotkey_triggered.connect(self.open_history)
+        if self.history_window and hasattr(self.history_window, "continue_chat_requested"):
+            self.history_window.continue_chat_requested.connect(self.continue_conversation)
 
         # Monitor resolution & multi-screen topology listeners
         q_app = QGuiApplication.instance()
@@ -203,6 +225,9 @@ class AppController(QObject):
         # Reset conversation history only if this is a fresh capture, not a New Screenshot flow
         if not self._is_new_screenshot_flow:
             self._current_history = []
+            self._current_conversation_id = None
+            self._first_question = ""
+            self._first_image_bytes = self._current_image_bytes
         self._is_new_screenshot_flow = False
         self._last_question = ""
 
@@ -233,6 +258,8 @@ class AppController(QObject):
             return
 
         prompt = question.strip() if question and question.strip() else "Explain this screen"
+        if not self._first_question:
+            self._first_question = prompt
         self._start_ai_request(question=prompt, image_png=self._current_image_bytes, is_followup=False)
 
     def on_send_followup(self, question: str) -> None:
@@ -320,6 +347,149 @@ class AppController(QObject):
         self.popup.show_answer(result.text, question=self._last_question)
         logger.info("AI request %d answered successfully (%d history turns)", request_id, len(result.history))
 
+        # Check opt-in prompt or save completed answer
+        if not getattr(self.settings, "save_history_prompted", False):
+            self.popup.show_opt_in_prompt(True)
+        else:
+            self.popup.show_opt_in_prompt(False)
+            if getattr(self.settings, "save_history", False):
+                self._save_current_completed_turn(result.text)
+
+    def on_opt_in_choice(self, save_chosen: bool) -> None:
+        """Handle user choice from the one-time opt-in banner."""
+        from config.settings import save_settings
+        self.settings.save_history_prompted = True
+        self.settings.save_history = save_chosen
+        save_settings(self.settings)
+        self.popup.show_opt_in_prompt(False)
+        logger.info("User selected history opt-in: save_history=%s", save_chosen)
+
+        if save_chosen and self._current_history:
+            last_text = ""
+            last_turn = self._current_history[-1]
+            if hasattr(last_turn, "parts") and last_turn.parts:
+                last_text = getattr(last_turn.parts[0], "text", "")
+            elif isinstance(last_turn, dict) and "parts" in last_turn and last_turn["parts"]:
+                p = last_turn["parts"][0]
+                last_text = p.get("text", "") if isinstance(p, dict) else str(p)
+            self._save_current_completed_turn(last_text)
+
+    def _save_current_completed_turn(self, answer_text: str) -> None:
+        """Save completed turn off the UI thread via HistoryDbWorker."""
+        if not getattr(self.settings, "save_history", False):
+            return
+
+        first_q = self._first_question or self._last_question or "Explain this screen"
+        first_img = self._first_image_bytes
+        curr_q = self._last_question or "Explain this screen"
+        curr_img = self._current_image_bytes
+        is_new_conv = self._current_conversation_id is None
+        conv_id = self._current_conversation_id
+        save_thumbs = getattr(self.settings, "save_thumbnails", False)
+
+        def task():
+            try:
+                if is_new_conv:
+                    title = generate_title(first_q, answer_text)
+                    thumbnail = create_thumbnail(first_img) if save_thumbs and first_img else None
+                    new_id = self.history_store.create_conversation(title=title, thumbnail=thumbnail)
+                    self._current_conversation_id = new_id
+                    self.history_store.add_message(
+                        new_id,
+                        role="user",
+                        text=first_q,
+                        has_image=bool(first_img),
+                    )
+                    self.history_store.add_message(
+                        new_id,
+                        role="model",
+                        text=answer_text,
+                        has_image=False,
+                    )
+                    logger.info("Saved new conversation %d ('%s') to history.", new_id, title)
+                else:
+                    self.history_store.add_message(
+                        conv_id,
+                        role="user",
+                        text=curr_q,
+                        has_image=bool(curr_img),
+                    )
+                    self.history_store.add_message(
+                        conv_id,
+                        role="model",
+                        text=answer_text,
+                        has_image=False,
+                    )
+                    logger.info("Appended message to conversation %d in history.", conv_id)
+            except Exception as exc:
+                logger.warning("Failed to save conversation to history: %s", exc)
+
+        try:
+            self._db_worker = HistoryDbWorker(task, parent=self)
+            self._db_worker.start()
+        except Exception as err:
+            logger.warning("Failed to launch history DB worker: %s", err)
+
+    def open_history(self) -> None:
+        """Open History window. Allowed in every state except SELECTING."""
+        if self.state_manager.state == AppState.SELECTING:
+            logger.info("Opening History ignored: state is SELECTING.")
+            return
+
+        if hasattr(self, "history_window") and self.history_window:
+            self.history_window.refresh_and_show()
+
+    def continue_conversation(self, conversation_id: int) -> None:
+        """Load past conversation into popup with last 20 messages for provider follow-up."""
+        conv = self.history_store.get_conversation(conversation_id)
+        if not conv:
+            logger.warning("Conversation %d not found in history store.", conversation_id)
+            return
+
+        raw_messages = self.history_store.get_last_messages(conversation_id, limit=20)
+        if not raw_messages:
+            logger.warning("No messages found for conversation %d.", conversation_id)
+            return
+
+        self._current_conversation_id = conversation_id
+        self._current_image_bytes = None
+        self._first_image_bytes = None
+        self._is_new_screenshot_flow = False
+
+        # Format history for provider
+        self._current_history = self._format_history_for_provider(raw_messages)
+
+        last_ans = ""
+        last_q = ""
+        for m in reversed(raw_messages):
+            if m["role"] in ("model", "assistant") and not last_ans:
+                last_ans = m["text"]
+            elif m["role"] == "user" and not last_q:
+                last_q = m["text"]
+
+        self._first_question = last_q
+        self._last_question = ""
+
+        # Show answer view in popup without stealing focus
+        self.popup.show_answer(last_ans or "Continuing conversation...", question=last_q, is_first_answer=False)
+        self.popup.show_note("Earlier screenshots are not re-sent.")
+
+        self.state_manager.resume_conversation()
+
+    def _format_history_for_provider(self, raw_messages: List[dict[str, Any]]) -> List[Any]:
+        """Convert stored messages to provider-compatible history entries."""
+        result = []
+        try:
+            from google.genai import types
+            for m in raw_messages:
+                role = "model" if m["role"] in ("model", "assistant") else "user"
+                result.append(types.Content(role=role, parts=[types.Part.from_text(text=m["text"])]))
+        except Exception:
+            for m in raw_messages:
+                role = "model" if m["role"] in ("model", "assistant") else "user"
+                result.append({"role": role, "parts": [m["text"]], "text": m["text"]})
+        return result
+
     def _on_worker_error(self, request_id: int, error: ProviderError) -> None:
         """Handle error from worker."""
         if request_id != self._current_request_id:
@@ -385,7 +555,10 @@ class AppController(QObject):
         if hasattr(self.popup, "pill"):
             self.popup.pill.hide()
         self._current_image_bytes = None
+        self._first_image_bytes = None
+        self._first_question = ""
         self._current_history.clear()
+        self._current_conversation_id = None
         self._last_question = ""
         self._is_new_screenshot_flow = False
 

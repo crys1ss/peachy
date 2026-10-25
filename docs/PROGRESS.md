@@ -557,5 +557,65 @@ Generated 5 preview screenshots into `docs/screens/`:
 ### Total Automated Tests (134/134 pytest tests passed in 3.21s)
 - 134 passed with 100% pass rate across geometry, overlay, hotkey, provider, settings, and FSM lifecycle tests.
 
+---
+
+## Chat History Update
+
+### What Works & Is Done
+1. **Local SQLite Storage ([history/store.py](file:///c:/Users/TANAY/Downloads/Peachy/history/store.py))**:
+   - SQLite store at `%APPDATA%\Peachy\history.db` with schema versioning (`schema_version`).
+   - Tables:
+     - `conversations(id, title, created_at, updated_at, thumbnail)`
+     - `messages(id, conversation_id, role, text, created_at, has_image)`
+   - Parameterized queries only, WAL mode enabled, foreign keys enabled, and short-lived connections (`connect()` context manager with 10s busy timeout).
+   - Non-blocking writes: all database persistence off the UI thread via `HistoryDbWorker(QThread)` in [history/worker.py](file:///c:/Users/TANAY/Downloads/Peachy/history/worker.py).
+   - Text-only by default: full screenshots are never stored. Optional setting `save_thumbnails` (OFF by default) stores a 240 px wide JPEG thumbnail (quality 70) per conversation.
+   - Corrupt database recovery: automatically backs up corrupt DB to `history.db.bak`, recreates a fresh schema, logs a warning, and continues operating without crashing.
+   - Local title generation without AI call: first question cut at 50 characters, or if no question (empty/None/"Explain this screen"), first six words of first answer.
+   - Persistence lifecycle: saves after each completed answer; cancelled or failed requests are never saved. Save errors are logged and never break popup operation.
+2. **Opt-in & Privacy**:
+   - `save_history` setting defaults to `False` until user explicitly opts in.
+   - One-time opt-in banner appears in the popup after the first answer completes: *"Save your chats on this PC so you can reopen them later? You can turn this off any time."* with "Save" and "Not now" buttons. The choice is remembered (`save_history_prompted`).
+   - Settings window ([ui/settings_window.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/settings_window.py)) features toggles for `save_history` and `save_thumbnails`, a "Clear all history" button with confirmation dialog (deleting all rows and executing `VACUUM` in autocommit mode), and updated privacy text disclosing local-only storage.
+3. **History Window ([ui/history_window.py](file:///c:/Users/TANAY/Downloads/Peachy/ui/history_window.py))**:
+   - Styled with Peachy theme tokens (pink accents, 16px radius, light and dark mode adaptation).
+   - Left sidebar with grouped `QTreeWidget`: "Today", "Yesterday", and "Earlier", displaying titles, timestamps, and optional thumbnail icons.
+   - Live search box filtering conversations via SQL `LIKE` over message text.
+   - Right pane displaying full transcript with rendered markdown and a dedicated "Copy" button with 1.5s toast on each assistant answer.
+   - Action buttons:
+     - **Continue this chat**: Opens the popup loaded with that conversation; subsequent follow-ups include the last 20 messages as history context. Displays note: *"Earlier screenshots are not re-sent."*
+     - **Export to Markdown**: Save file dialog exporting conversation with timestamps, user prompts, and assistant answers.
+     - **Delete chat**: Deletes active conversation and cascades messages with confirmation.
+     - **Clear all**: Clears all history with confirmation.
+     - **Empty state**: Friendly card with link to Settings when history is empty or saving is disabled.
+4. **Access Points & Second Global Hotkey**:
+   - Tray context menu: added "History" action.
+   - Popup header: added clock icon button (`🕒`) with tooltip.
+   - Second global hotkey: default `Ctrl+Shift+H` (registered with dedicated ID `0x5048` in [core/hotkey_manager.py](file:///c:/Users/TANAY/Downloads/Peachy/core/hotkey_manager.py)), fully configurable and conflict-handled in Settings. Unregistered cleanly on pause and quit.
+   - State guard: opening History is permitted in every state except `SELECTING` (safely ignored there) and does not disrupt the capture state machine.
+   - State logic update: added `resume_conversation()` to `StateManager` to transition cleanly to `ANSWERING` when continuing a saved conversation.
+
+### Verified by Automated Tests (151/151 pytest tests passed in 3.72s)
+- `tests/test_history.py` (12 tests):
+  - `test_title_generation`: Title generation for question <= 50 chars, > 50 chars cut, empty/explain screen fallback to first six words of answer.
+  - `test_create_thumbnail`: 240px wide JPEG quality 70 creation.
+  - `test_history_store_crud`: Conversation creation, message appending, chronological ordering (`updated_at DESC, id DESC`), SQL `LIKE` search, single delete, clear all and `VACUUM`.
+  - `test_corrupt_database_recovery`: Corrupt file backup to `.bak` and fresh DB recreation without crashing.
+  - `test_export_markdown`: Structured markdown export formatting.
+  - `test_database_privacy_audit`: Zero keys or token patterns in DB, zero images when thumbnails are off.
+  - `test_saving_off_writes_nothing`: Verification that nothing is persisted when `save_history` is False.
+  - `test_saving_on_writes_conversation_and_messages`: Completed turns properly persisted when `save_history` is True.
+  - `test_continue_chat_last_20_messages`: Reopening conversation passes exactly the last 20 messages to provider and displays screenshot note.
+  - `test_open_history_ignored_in_selecting`: Opening history while in `SELECTING` state is safely ignored and preserves FSM state.
+  - `test_opt_in_prompt_banner`: One-time opt-in prompt displayed on first answer completion, choice saved.
+  - `test_history_window_ui`: Tree grouping, search filter, transcript display, continue chat, delete, and clear all.
+- `tests/test_hotkey_manager.py` (2 new tests):
+  - `test_history_hotkey_registration_and_failure`: Second hotkey registration and Win32 failure path.
+  - `test_history_hotkey_pause_and_cleanup`: Both hotkeys unregistered on pause and cleanup.
+- `tests/test_settings.py` & `tests/test_settings_window.py`:
+  - Default settings for history options verified.
+  - History hotkey recorder and toggles tested.
+- All 136 prior unit and integration tests continue to pass without regression.
+
 
 

@@ -19,7 +19,7 @@ def test_redaction_filter_replaces_all_api_keys_and_tokens():
         def __init__(self, msg: str):
             self.msg = msg
 
-    # Fake AIza key
+    # Fake key
     rec1 = FakeRecord("Sent request using key " + "A" + "I" + "z" + "a" + "SyD12345678901234567890123456789012")
     assert filt.filter(rec1) is True
     assert "[REDACTED_API_KEY]" in rec1.msg

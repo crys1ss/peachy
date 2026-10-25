@@ -33,8 +33,10 @@ from core.double_tap import DoubleTapHook
 from core.hotkey_manager import HotkeyManager
 from core.state_manager import AppState, StateManager
 from ui.peachy_popup import PeachyPopup
+from ui.history_window import HistoryWindow
 from ui.settings_window import SettingsWindow
 from ui.tray_manager import TrayManager
+from history.store import HistoryStore
 
 SINGLE_INSTANCE_SERVER_NAME = "Peachy_Single_Instance_IPC_Server"
 
@@ -183,7 +185,11 @@ class PeachyApp(QObject):
         # 7. Peachy Popup Window
         self.popup = PeachyPopup(pinned=self.settings.pinned, answer_length=self.settings.answer_length)
 
-        # 8. App Controller
+        # 8. Chat History Store & Window
+        self.history_store = HistoryStore()
+        self.history_window = HistoryWindow(store=self.history_store, settings=self.settings)
+
+        # 9. App Controller
         self.controller = AppController(
             state_manager=self.state_manager,
             hotkey_manager=self.hotkey_manager,
@@ -191,14 +197,17 @@ class PeachyApp(QObject):
             overlay_manager=self.overlay_manager,
             popup=self.popup,
             settings=self.settings,
+            history_store=self.history_store,
+            history_window=self.history_window,
             parent=self,
         )
 
-        # 9. Settings Window
+        # 10. Settings Window
         self.settings_window = SettingsWindow(
             settings=self.settings,
             hotkey_manager=self.hotkey_manager,
             double_tap_hook=self.double_tap_hook,
+            store=self.history_store,
         )
 
         self._connect_signals()
@@ -211,6 +220,15 @@ class PeachyApp(QObject):
                 f"Could not register shortcut '{self.settings.hotkey}'. It may be in use.",
             )
 
+        # Register configured history hotkey
+        if self.settings.history_hotkey:
+            reg_hist_ok = self.hotkey_manager.register_history(self.settings.history_hotkey)
+            if not reg_hist_ok:
+                self.tray_manager.show_notification(
+                    "History Hotkey Warning",
+                    f"Could not register history shortcut '{self.settings.history_hotkey}'. It may be in use.",
+                )
+
         # Enable double-tap C if configured
         if self.settings.double_tap_enabled:
             self.double_tap_hook.set_enabled(True)
@@ -222,6 +240,9 @@ class PeachyApp(QObject):
     def _connect_signals(self) -> None:
         """Wire UI, Hotkey, Hook, and State Machine signals."""
         self.hotkey_manager.registration_failed.connect(
+            lambda msg: self.tray_manager.show_notification("Hotkey Conflict", msg)
+        )
+        self.hotkey_manager.history_registration_failed.connect(
             lambda msg: self.tray_manager.show_notification("Hotkey Conflict", msg)
         )
 
@@ -247,8 +268,14 @@ class PeachyApp(QObject):
     def _on_settings_applied(self, new_settings: Settings) -> None:
         """Update active settings across all running components."""
         try:
+            old_history_hotkey = self.settings.history_hotkey
+            old_hotkey = self.settings.hotkey
+
             self.settings = new_settings
             self.controller.settings = new_settings
+            if hasattr(self, "history_window") and self.history_window:
+                self.history_window.settings = new_settings
+                self.history_window.apply_theme(new_settings.theme)
             if hasattr(self.popup, "set_pinned"):
                 self.popup.set_pinned(new_settings.pinned)
             else:
@@ -257,6 +284,13 @@ class PeachyApp(QObject):
                 self.popup.set_answer_length(new_settings.answer_length)
             if self.state_manager.state == AppState.ERROR:
                 self.controller.on_popup_cancelled()
+
+            # Re-register hotkeys if modified
+            if new_settings.hotkey != old_hotkey:
+                self.hotkey_manager.register(new_settings.hotkey)
+            if new_settings.history_hotkey != old_history_hotkey:
+                self.hotkey_manager.register_history(new_settings.history_hotkey)
+
             self.logger.info("Settings updated and applied live.")
         except Exception as exc:
             self.logger.exception("Error applying updated settings: %s", exc)
@@ -295,6 +329,8 @@ class PeachyApp(QObject):
         self.overlay_manager.cleanup()
         self.tray_manager.hide()
         self.popup.close()
+        if hasattr(self, "history_window") and self.history_window:
+            self.history_window.close()
         self.settings_window.close()
         self.server.close()
         self.app.quit()

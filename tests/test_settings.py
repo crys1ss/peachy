@@ -19,6 +19,10 @@ def test_settings_defaults():
     assert s.answer_length == "short"
     assert s.selection_mode == "freehand"
     assert s.outside_shape == "blank"
+    assert s.save_history is False
+    assert s.save_thumbnails is False
+    assert s.save_history_prompted is False
+    assert s.history_hotkey == "Ctrl+Shift+H"
     # Ensure no API key field exists on Settings
     assert not hasattr(s, "api_key")
     assert not hasattr(s, "gemini_api_key")

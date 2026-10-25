@@ -389,6 +389,7 @@ class AnswerView(QWidget):
     followup_requested = Signal(str)
     new_screenshot_requested = Signal()
     close_requested = Signal()
+    opt_in_choice = Signal(bool)
 
     def __init__(self, theme: ThemeTokens, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -445,6 +446,55 @@ class AnswerView(QWidget):
         self.browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.browser)
 
+        # Small note banner for history / multi-turn context
+        self.note_label = QLabel("Earlier screenshots are not re-sent.")
+        self.note_label.setFont(get_app_font(11))
+        self.note_label.setStyleSheet(f"color: {theme.muted}; font-style: italic; margin-top: 2px;")
+        self.note_label.hide()
+        layout.addWidget(self.note_label)
+
+        # One-time Opt-In Banner for saving chat history
+        self.opt_in_banner = QFrame()
+        self.opt_in_banner.setStyleSheet(f"""
+            QFrame {{
+                background-color: {theme.soft_surface};
+                border: 1px solid {theme.border};
+                border-radius: 8px;
+                padding: 6px;
+            }}
+        """)
+        opt_layout = QVBoxLayout(self.opt_in_banner)
+        opt_layout.setContentsMargins(8, 6, 8, 6)
+        opt_layout.setSpacing(6)
+
+        opt_msg = QLabel("Save your chats on this PC so you can reopen them later? You can turn this off any time.")
+        opt_msg.setWordWrap(True)
+        opt_msg.setFont(get_app_font(11))
+        opt_msg.setStyleSheet(f"color: {theme.text};")
+        opt_layout.addWidget(opt_msg)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+
+        self.opt_not_now_btn = QPushButton("Not now")
+        self.opt_not_now_btn.setObjectName("secondaryButton")
+        self.opt_not_now_btn.setFont(get_app_font(11))
+        self.opt_not_now_btn.clicked.connect(lambda: self._on_opt_in_clicked(False))
+
+        self.opt_save_btn = QPushButton("Save")
+        self.opt_save_btn.setObjectName("primaryButton")
+        self.opt_save_btn.setFont(get_app_font(11, QFont.Weight.DemiBold))
+        self.opt_save_btn.clicked.connect(lambda: self._on_opt_in_clicked(True))
+
+        btn_row.addWidget(self.opt_not_now_btn)
+        btn_row.addWidget(self.opt_save_btn)
+        opt_layout.addLayout(btn_row)
+
+        self.opt_in_banner.hide()
+        layout.addWidget(self.opt_in_banner)
+
         # Follow-up Input Bar (Rounded Pill style)
         followup_layout = QHBoxLayout()
         followup_layout.setContentsMargins(0, 4, 0, 0)
@@ -473,6 +523,20 @@ class AnswerView(QWidget):
         self.followup_input.returnPressed.connect(self._on_followup)
         self.new_screen_btn.clicked.connect(self.new_screenshot_requested.emit)
         self.done_btn.clicked.connect(self.close_requested.emit)
+
+    def _on_opt_in_clicked(self, choice: bool) -> None:
+        self.opt_in_banner.hide()
+        self.opt_in_choice.emit(choice)
+
+    def show_opt_in_prompt(self, show: bool = True) -> None:
+        self.opt_in_banner.setVisible(show)
+
+    def show_note(self, note: str) -> None:
+        self.note_label.setText(note)
+        self.note_label.show()
+
+    def hide_note(self) -> None:
+        self.note_label.hide()
 
     def set_answer(self, markdown_text: str, question: str = "", is_first_answer: bool = True) -> None:
         """Display answer with custom formatted markdown code blocks."""
@@ -667,6 +731,8 @@ class PeachyPopup(QWidget):
     new_screenshot_requested = Signal()
     cancelled = Signal()
     length_changed = Signal(str)  # "short" or "detailed"
+    history_requested = Signal()
+    opt_in_choice = Signal(bool)
 
     def __init__(self, pinned: bool = True, answer_length: str = "short", parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -765,6 +831,13 @@ class PeachyPopup(QWidget):
         self.chip_btn.clicked.connect(self._toggle_length_chip)
         header_layout.addWidget(self.chip_btn)
 
+        # History Button (Clock Icon)
+        self.history_btn = QPushButton("🕒")
+        self.history_btn.setObjectName("iconButton")
+        self.history_btn.setToolTip("Chat History (Ctrl+Shift+H)")
+        self.history_btn.clicked.connect(self.history_requested.emit)
+        header_layout.addWidget(self.history_btn)
+
         # Action Buttons (Pin, Minimize, Close)
         self.pin_btn = QPushButton("📌" if self._is_pinned else "📍")
         self.pin_btn.setObjectName("iconButton")
@@ -799,6 +872,7 @@ class PeachyPopup(QWidget):
         self.answer_view.followup_requested.connect(self.send_followup.emit)
         self.answer_view.new_screenshot_requested.connect(self.new_screenshot_requested.emit)
         self.answer_view.close_requested.connect(self.cancelled.emit)
+        self.answer_view.opt_in_choice.connect(self.opt_in_choice.emit)
 
         self.error_view.retry_requested.connect(self.retry_requested.emit)
         self.error_view.cancel_requested.connect(self.cancelled.emit)
@@ -861,6 +935,8 @@ class PeachyPopup(QWidget):
     def show_ask(self, pixmap: QPixmap) -> None:
         """Display Ask view with focus enabled so the user can immediately type."""
         self._is_first_answer = True
+        self.hide_note()
+        self.show_opt_in_prompt(False)
         self.ask_view.set_thumbnail(pixmap)
         self.stack.setCurrentIndex(ViewIndex.ASK)
 
@@ -870,6 +946,18 @@ class PeachyPopup(QWidget):
         self.raise_()
         self.activateWindow()
         self.ask_view.focus_input()
+
+    def show_opt_in_prompt(self, show: bool = True) -> None:
+        """Show or hide the one-time history opt-in banner."""
+        self.answer_view.show_opt_in_prompt(show)
+
+    def show_note(self, text: str) -> None:
+        """Display contextual note in the answer view."""
+        self.answer_view.show_note(text)
+
+    def hide_note(self) -> None:
+        """Hide contextual note in the answer view."""
+        self.answer_view.hide_note()
 
     def show_thinking(self) -> None:
         """Display Thinking view."""

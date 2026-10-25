@@ -67,6 +67,7 @@ class TrayManager(QObject):
     """Manages the system tray icon, context menu, and notifications."""
 
     ask_requested = Signal()
+    history_requested = Signal()
     settings_requested = Signal()
     pause_toggled = Signal(bool)
     quit_requested = Signal()
@@ -91,6 +92,9 @@ class TrayManager(QObject):
 
         ask_action = self._menu.addAction("Ask Peachy")
         ask_action.triggered.connect(self.ask_requested.emit)
+
+        history_action = self._menu.addAction("History")
+        history_action.triggered.connect(self.history_requested.emit)
 
         self._menu.addSeparator()
 

@@ -40,6 +40,10 @@ class Settings:
     popup_position: str = "near_selection"  # "near_selection" or "last_used"
     selection_mode: str = "freehand"  # "freehand" or "rectangle"
     outside_shape: str = "blank"  # "blank" or "keep"
+    save_history: bool = False
+    save_thumbnails: bool = False
+    save_history_prompted: bool = False
+    history_hotkey: str = "Ctrl+Shift+H"
 
 
 def set_launch_at_startup(enabled: bool, exe_path: str | None = None) -> bool:

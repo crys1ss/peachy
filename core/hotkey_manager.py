@@ -16,7 +16,8 @@ from core import win32
 
 logger = logging.getLogger(__name__)
 
-PEACHY_HOTKEY_ID = 0x5045  # "PE" in ASCII
+PEACHY_HOTKEY_ID = 0x5045  # "PE" in ASCII (Capture hotkey)
+PEACHY_HISTORY_HOTKEY_ID = 0x5048  # "PH" in ASCII (History hotkey)
 
 # Common Windows Virtual-Key Codes
 _VK_MAP: dict[str, int] = {
@@ -99,16 +100,29 @@ def parse_shortcut(shortcut_str: str) -> Tuple[int, int]:
 class _WinHotkeyEventFilter(QAbstractNativeEventFilter):
     """Native event filter to capture WM_HOTKEY events on Windows."""
 
-    def __init__(self, hotkey_id: int, on_hotkey: callable):
+    def __init__(self, manager_or_id: Any, on_hotkey: Optional[callable] = None):
         super().__init__()
-        self._hotkey_id = hotkey_id
-        self._on_hotkey = on_hotkey
+        if isinstance(manager_or_id, int):
+            self._manager = None
+            self._hotkey_id = manager_or_id
+            self._on_hotkey = on_hotkey
+        else:
+            self._manager = manager_or_id
+            self._hotkey_id = getattr(manager_or_id, "_hotkey_id", PEACHY_HOTKEY_ID)
+            self._on_hotkey = None
 
     def nativeEventFilter(self, event_type, message):
         try:
             msg = wintypes.MSG.from_address(int(message))
             if msg.message == win32.WM_HOTKEY:
-                if msg.wParam == self._hotkey_id:
+                if self._manager is not None:
+                    if msg.wParam == self._manager._hotkey_id:
+                        self._manager._handle_hotkey()
+                        return True, 0
+                    elif msg.wParam == self._manager._history_hotkey_id:
+                        self._manager._handle_history_hotkey()
+                        return True, 0
+                elif self._on_hotkey is not None and msg.wParam == self._hotkey_id:
                     self._on_hotkey()
                     return True, 0
         except Exception as exc:
@@ -117,21 +131,38 @@ class _WinHotkeyEventFilter(QAbstractNativeEventFilter):
 
 
 class HotkeyManager(QObject):
-    """Manages system-wide hotkey registration and notification."""
+    """Manages system-wide hotkey registration and notification for capture and history."""
 
     hotkey_triggered = Signal()
     registration_failed = Signal(str)
+    history_hotkey_triggered = Signal()
+    history_registration_failed = Signal(str)
 
-    def __init__(self, parent: Optional[QObject] = None, hotkey_id: int = PEACHY_HOTKEY_ID):
+    def __init__(
+        self,
+        parent: Optional[QObject] = None,
+        hotkey_id: int = PEACHY_HOTKEY_ID,
+        history_hotkey_id: int = PEACHY_HISTORY_HOTKEY_ID,
+    ):
         super().__init__(parent)
         self._hotkey_id = hotkey_id
+        self._history_hotkey_id = history_hotkey_id
+
+        # Capture hotkey state
         self._current_shortcut: Optional[str] = None
         self._modifiers = 0
         self._vk = 0
         self._is_registered = False
+
+        # History hotkey state
+        self._current_history_shortcut: Optional[str] = None
+        self._history_modifiers = 0
+        self._history_vk = 0
+        self._is_history_registered = False
+
         self._is_paused = False
 
-        self._filter = _WinHotkeyEventFilter(self._hotkey_id, self._handle_hotkey)
+        self._filter = _WinHotkeyEventFilter(self)
         app = QCoreApplication.instance()
         if app is not None:
             app.installNativeEventFilter(self._filter)
@@ -141,6 +172,10 @@ class HotkeyManager(QObject):
         return self._is_registered
 
     @property
+    def is_history_registered(self) -> bool:
+        return self._is_history_registered
+
+    @property
     def is_paused(self) -> bool:
         return self._is_paused
 
@@ -148,20 +183,28 @@ class HotkeyManager(QObject):
     def current_shortcut(self) -> Optional[str]:
         return self._current_shortcut
 
+    @property
+    def current_history_shortcut(self) -> Optional[str]:
+        return self._current_history_shortcut
+
     def _handle_hotkey(self) -> None:
-        """Internal callback invoked by the native event filter."""
+        """Internal callback invoked by the native event filter for capture."""
         if self._is_paused:
-            logger.debug("Hotkey received but manager is paused.")
+            logger.debug("Capture hotkey received but manager is paused.")
             return
-        logger.info("Global hotkey triggered.")
+        logger.info("Global capture hotkey triggered.")
         self.hotkey_triggered.emit()
 
-    def register(self, shortcut_str: str) -> bool:
-        """Register a new global hotkey.
+    def _handle_history_hotkey(self) -> None:
+        """Internal callback invoked by the native event filter for history."""
+        if self._is_paused:
+            logger.debug("History hotkey received but manager is paused.")
+            return
+        logger.info("Global history hotkey triggered.")
+        self.history_hotkey_triggered.emit()
 
-        Unregisters any previous hotkey first.
-        If registration fails (e.g. key in use), emits registration_failed and keeps running.
-        """
+    def register(self, shortcut_str: str) -> bool:
+        """Register the primary screen capture global hotkey."""
         try:
             modifiers, vk = parse_shortcut(shortcut_str)
         except ValueError as err:
@@ -178,13 +221,12 @@ class HotkeyManager(QObject):
         self._vk = vk
 
         if self._is_paused:
-            # Kept for when unpaused
             return True
 
         success = win32.register_hotkey(None, self._hotkey_id, self._modifiers, self._vk)
         if success:
             self._is_registered = True
-            logger.info("Successfully registered global hotkey: %s", shortcut_str)
+            logger.info("Successfully registered global capture hotkey: %s", shortcut_str)
             return True
         else:
             self._is_registered = False
@@ -197,17 +239,62 @@ class HotkeyManager(QObject):
             return False
 
     def unregister(self) -> bool:
-        """Unregister the currently active hotkey."""
+        """Unregister the currently active capture hotkey."""
         if not self._is_registered:
             return True
 
         success = win32.unregister_hotkey(None, self._hotkey_id)
         self._is_registered = False
-        logger.info("Unregistered hotkey: %s", self._current_shortcut)
+        logger.info("Unregistered capture hotkey: %s", self._current_shortcut)
+        return success
+
+    def register_history(self, shortcut_str: str) -> bool:
+        """Register the secondary History global hotkey."""
+        try:
+            modifiers, vk = parse_shortcut(shortcut_str)
+        except ValueError as err:
+            msg = f"Invalid history shortcut '{shortcut_str}': {err}"
+            logger.error(msg)
+            self.history_registration_failed.emit(msg)
+            return False
+
+        if self._is_history_registered:
+            self.unregister_history()
+
+        self._current_history_shortcut = shortcut_str
+        self._history_modifiers = modifiers
+        self._history_vk = vk
+
+        if self._is_paused:
+            return True
+
+        success = win32.register_hotkey(None, self._history_hotkey_id, self._history_modifiers, self._history_vk)
+        if success:
+            self._is_history_registered = True
+            logger.info("Successfully registered global history hotkey: %s", shortcut_str)
+            return True
+        else:
+            self._is_history_registered = False
+            err_msg = (
+                f"Failed to register history hotkey '{shortcut_str}'. "
+                "The shortcut may already be in use by another application."
+            )
+            logger.warning(err_msg)
+            self.history_registration_failed.emit(err_msg)
+            return False
+
+    def unregister_history(self) -> bool:
+        """Unregister the currently active history hotkey."""
+        if not self._is_history_registered:
+            return True
+
+        success = win32.unregister_hotkey(None, self._history_hotkey_id)
+        self._is_history_registered = False
+        logger.info("Unregistered history hotkey: %s", self._current_history_shortcut)
         return success
 
     def set_paused(self, paused: bool) -> None:
-        """Pause or unpause hotkey interception."""
+        """Pause or unpause both hotkeys."""
         if self._is_paused == paused:
             return
 
@@ -216,15 +303,23 @@ class HotkeyManager(QObject):
             if self._is_registered:
                 win32.unregister_hotkey(None, self._hotkey_id)
                 self._is_registered = False
-                logger.info("Paused hotkey %s (unregistered from OS)", self._current_shortcut)
+                logger.info("Paused capture hotkey %s (unregistered from OS)", self._current_shortcut)
+            if self._is_history_registered:
+                win32.unregister_hotkey(None, self._history_hotkey_id)
+                self._is_history_registered = False
+                logger.info("Paused history hotkey %s (unregistered from OS)", self._current_history_shortcut)
         else:
             if self._current_shortcut:
-                logger.info("Resuming hotkey %s", self._current_shortcut)
+                logger.info("Resuming capture hotkey %s", self._current_shortcut)
                 self.register(self._current_shortcut)
+            if self._current_history_shortcut:
+                logger.info("Resuming history hotkey %s", self._current_history_shortcut)
+                self.register_history(self._current_history_shortcut)
 
     def cleanup(self) -> None:
-        """Cleanly unregister and remove native event filter upon application shutdown."""
+        """Cleanly unregister both hotkeys and remove native event filter upon application shutdown."""
         self.unregister()
+        self.unregister_history()
         app = QCoreApplication.instance()
         if app is not None and self._filter is not None:
             app.removeNativeEventFilter(self._filter)

@@ -113,3 +113,13 @@ class StateManager(QObject):
         self._state = AppState.IDLE
         logger.info("Forced reset to IDLE from %s", old_state.value)
         self.state_changed.emit(old_state, AppState.IDLE)
+
+    def resume_conversation(self) -> None:
+        """Transition into ANSWERING state when resuming a saved conversation from history."""
+        if self._state == AppState.ANSWERING:
+            return
+
+        old_state = self._state
+        self._state = AppState.ANSWERING
+        logger.info("Resumed active conversation: %s -> ANSWERING", old_state.value)
+        self.state_changed.emit(old_state, AppState.ANSWERING)

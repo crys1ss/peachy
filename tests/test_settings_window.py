@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
+from PySide6.QtWidgets import QMessageBox
 import pytest
 
 from config.settings import Settings
@@ -146,3 +147,46 @@ def test_save_and_apply_success(qtbot):
         mock_set_key.assert_called_once_with("new-secret-token")
         mock_double_tap.set_interval.assert_called_once_with(350)
         mock_double_tap.set_enabled.assert_called_once_with(True)
+
+
+def test_settings_window_history_controls(qtbot, tmp_path):
+    """Verify history hotkey and toggles in SettingsWindow."""
+    test_settings = Settings(
+        save_history=False,
+        save_thumbnails=False,
+        history_hotkey="Ctrl+Shift+H",
+    )
+    mock_hotkey_manager = MagicMock()
+    mock_hotkey_manager.register.return_value = True
+    mock_hotkey_manager.register_history.return_value = True
+
+    mock_store = MagicMock()
+
+    with patch("ui.settings_window.save_settings"):
+        win = SettingsWindow(
+            settings=test_settings,
+            hotkey_manager=mock_hotkey_manager,
+            store=mock_store,
+        )
+        qtbot.addWidget(win)
+
+        assert win.history_shortcut_button.text() == "Ctrl+Shift+H"
+        assert win.save_history_check.isChecked() is False
+        assert win.save_thumbnails_check.isChecked() is False
+
+        # Toggle them
+        win.history_shortcut_button.current_shortcut = "Ctrl+Alt+H"
+        win.save_history_check.setChecked(True)
+        win.save_thumbnails_check.setChecked(True)
+
+        win._save_and_apply()
+
+        assert test_settings.save_history is True
+        assert test_settings.save_thumbnails is True
+        assert test_settings.history_hotkey == "Ctrl+Alt+H"
+        mock_hotkey_manager.register_history.assert_called_once_with("Ctrl+Alt+H")
+
+        # Test clear all history confirmation
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            win._on_clear_history()
+            mock_store.clear_all.assert_called_once()
