@@ -92,7 +92,7 @@ class HistoryWindow(QDialog):
         super().__init__(parent)
         self.store = store or HistoryStore()
         self.settings = settings or load_settings()
-        self.theme = get_theme()
+        self.theme = get_theme(theme_mode=getattr(self.settings, "theme", "midnight"))
 
         self._selected_conversation_id: Optional[int] = None
         self._copy_timers: List[QTimer] = []
@@ -106,6 +106,13 @@ class HistoryWindow(QDialog):
         self.setMinimumSize(780, 520)
         self.resize(840, 580)
         self.setStyleSheet(self._generate_stylesheet())
+
+    def apply_theme(self, theme_mode: Optional[str] = None) -> None:
+        """Apply theme mode dynamically and re-style history window."""
+        mode = theme_mode or getattr(self.settings, "theme", "midnight")
+        self.theme = get_theme(theme_mode=mode)
+        self.setStyleSheet(self._generate_stylesheet())
+        self.reload_history()
 
     def _generate_stylesheet(self) -> str:
         t = self.theme

@@ -342,6 +342,19 @@ class AskView(QWidget):
         self.input_field.clear()
         self.thumbnail_label.clear()
 
+    def apply_theme(self, theme: ThemeTokens) -> None:
+        """Update theme tokens and styled elements in AskView."""
+        self.theme = theme
+        self.thumbnail_frame.setStyleSheet(
+            f"border: 1.5px dashed {theme.border}; border-radius: 12px; background-color: {theme.secondary};"
+        )
+        self.hint_label.setStyleSheet(f"color: {theme.text_secondary};")
+        self.solve_chip.setIcon(get_svg_icon("solve", color=theme.text_secondary, size=14))
+        self.fix_code_chip.setIcon(get_svg_icon("fix_code", color=theme.text_secondary, size=14))
+        self.translate_chip.setIcon(get_svg_icon("translate", color=theme.text_secondary, size=14))
+        self.summarize_chip.setIcon(get_svg_icon("summarize", color=theme.text_secondary, size=14))
+        self.copy_text_chip.setIcon(get_svg_icon("copy_text", color=theme.text_secondary, size=14))
+
     def _on_send(self) -> None:
         self.send_requested.emit(self.input_field.text().strip())
 
@@ -380,6 +393,13 @@ class ThinkingView(QWidget):
         layout.addWidget(self.cancel_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.cancel_btn.clicked.connect(self.cancel_requested.emit)
+
+    def apply_theme(self, theme: ThemeTokens) -> None:
+        """Update theme tokens and styled elements in ThinkingView."""
+        self.theme = theme
+        self.dots.color = QColor(theme.pink)
+        self.dots.update()
+        self.status_label.setStyleSheet(f"color: {theme.text_secondary};")
 
 
 class AnswerView(QWidget):
@@ -549,6 +569,9 @@ class AnswerView(QWidget):
 
     def set_answer(self, markdown_text: str, question: str = "", is_first_answer: bool = True) -> None:
         """Display answer with Pygments-enhanced markdown and Cascadia Code / Consolas font."""
+        self._last_markdown = markdown_text
+        self._last_question = question
+        self._last_first_answer = is_first_answer
         if is_first_answer:
             if "Extract all visible text in this image verbatim" in question:
                 self.header_title.setText("Extracted Text (Copied to Clipboard)")
@@ -619,6 +642,26 @@ class AnswerView(QWidget):
             self.followup_input.setEnabled(False)
             self.followup_requested.emit(q)
 
+    def apply_theme(self, theme: ThemeTokens) -> None:
+        """Update theme tokens and styled elements in AnswerView."""
+        self.theme = theme
+        self.header_title.setStyleSheet(f"color: {theme.pink}; margin-bottom: 2px;")
+        self.question_header.setStyleSheet(f"color: {theme.text_secondary}; margin-bottom: 4px;")
+        self.copy_btn.setIcon(get_svg_icon("copy", color=theme.text_secondary, size=14))
+        self.new_screen_btn.setIcon(get_svg_icon("crop", color=theme.text_secondary, size=14))
+        self.done_btn.setIcon(get_svg_icon("check", color=theme.text_secondary, size=14))
+        self.note_label.setStyleSheet(f"color: {theme.text_secondary}; font-style: italic; margin-top: 2px;")
+        self.opt_in_banner.setStyleSheet(f"""
+            QFrame {{
+                background-color: {theme.secondary};
+                border: 1px solid {theme.border};
+                border-radius: 8px;
+                padding: 6px;
+            }}
+        """)
+        if hasattr(self, "_last_markdown") and self._last_markdown:
+            self.set_answer(self._last_markdown, getattr(self, "_last_question", ""), getattr(self, "_last_first_answer", True))
+
 
 class ErrorView(QWidget):
     """View 4: Friendly error display with Retry and Cancel options."""
@@ -679,6 +722,13 @@ class ErrorView(QWidget):
     def set_error(self, message: str) -> None:
         self.error_label.setText(message)
 
+    def apply_theme(self, theme: ThemeTokens) -> None:
+        """Update theme tokens and styled elements in ErrorView."""
+        self.theme = theme
+        self.icon_label.setPixmap(get_svg_pixmap("close", color=theme.error, size=28))
+        self.title_label.setStyleSheet(f"color: {theme.error};")
+        self.error_label.setStyleSheet(f"color: {theme.text_secondary};")
+
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
             self.cancel_requested.emit()
@@ -717,6 +767,12 @@ class MinimizedPillWidget(QWidget):
         layout.addStretch()
 
         self._drag_pos: Optional[QPoint] = None
+
+    def apply_theme(self, theme: ThemeTokens) -> None:
+        """Update theme tokens in MinimizedPillWidget."""
+        self.theme = theme
+        self.label.setStyleSheet(f"color: {theme.pink};")
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -757,15 +813,22 @@ class PeachyPopup(QWidget):
     history_requested = Signal()
     opt_in_choice = Signal(bool)
 
-    def __init__(self, pinned: bool = True, answer_length: str = "short", parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        pinned: bool = True,
+        answer_length: str = "short",
+        settings: Optional[Settings] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
+        self.settings = settings or load_settings()
         self._is_pinned = pinned
         self._answer_length = answer_length
         self._drag_pos: Optional[QPoint] = None
         self._is_first_answer = True
 
         # Resolve active theme
-        self.theme = get_theme()
+        self.theme = get_theme(theme_mode=getattr(self.settings, "theme", "midnight"))
 
         self.setWindowTitle("Peachy")
         self.setWindowFlags(
@@ -786,12 +849,12 @@ class PeachyPopup(QWidget):
         self.card.setStyleSheet(get_card_stylesheet(self.theme))
 
         # Soft card drop shadow
-        shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(24)
-        shadow.setXOffset(0)
-        shadow.setYOffset(4)
-        shadow.setColor(QColor(self.theme.shadow_color))
-        self.card.setGraphicsEffect(shadow)
+        self._shadow = QGraphicsDropShadowEffect(self.card)
+        self._shadow.setBlurRadius(24)
+        self._shadow.setXOffset(0)
+        self._shadow.setYOffset(4)
+        self._shadow.setColor(QColor(self.theme.shadow_color))
+        self.card.setGraphicsEffect(self._shadow)
 
         card_layout = QVBoxLayout(self.card)
         card_layout.setContentsMargins(16, 14, 16, 16)
@@ -956,6 +1019,38 @@ class PeachyPopup(QWidget):
         cx, cy = clamp_popup_to_screen(pill_pos.x(), pill_pos.y(), self.width(), self.height(), ag.x(), ag.y(), ag.width(), ag.height())
         self.move(cx, cy)
         self.show()
+
+    def apply_theme(self, theme_mode: Optional[str] = None) -> None:
+        """Apply theme mode dynamically and re-style all popup components."""
+        mode = theme_mode or getattr(self.settings, "theme", "midnight")
+        self.theme = get_theme(theme_mode=mode)
+        if hasattr(self, "card") and self.card:
+            self.card.setStyleSheet(get_card_stylesheet(self.theme))
+            if hasattr(self, "_shadow") and self._shadow:
+                self._shadow.setColor(QColor(self.theme.shadow_color))
+        if hasattr(self, "pin_btn") and self.pin_btn:
+            pin_name = "pin" if self._is_pinned else "unpin"
+            pin_color = self.theme.pink if self._is_pinned else self.theme.text_secondary
+            self.pin_btn.setIcon(get_svg_icon(pin_name, color=pin_color, size=16))
+        if hasattr(self, "close_btn") and self.close_btn:
+            self.close_btn.setIcon(get_svg_icon("close", color=self.theme.text_secondary, size=16))
+        if hasattr(self, "minimize_btn") and self.minimize_btn:
+            self.minimize_btn.setIcon(get_svg_icon("minimize", color=self.theme.text_secondary, size=16))
+        if hasattr(self, "history_btn") and self.history_btn:
+            self.history_btn.setIcon(get_svg_icon("history", color=self.theme.text_secondary, size=16))
+        if hasattr(self, "chip_btn") and self.chip_btn:
+            self.chip_btn.setIcon(get_svg_icon("chevron_down", color=self.theme.text_secondary, size=12))
+
+        if hasattr(self, "ask_view") and self.ask_view:
+            self.ask_view.apply_theme(self.theme)
+        if hasattr(self, "thinking_view") and self.thinking_view:
+            self.thinking_view.apply_theme(self.theme)
+        if hasattr(self, "answer_view") and self.answer_view:
+            self.answer_view.apply_theme(self.theme)
+        if hasattr(self, "error_view") and self.error_view:
+            self.error_view.apply_theme(self.theme)
+        if hasattr(self, "pill") and self.pill:
+            self.pill.apply_theme(self.theme)
         self.raise_()
 
     def show_ask(self, pixmap: QPixmap) -> None:

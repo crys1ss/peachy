@@ -58,6 +58,7 @@ from config.settings import (
 from core.hotkey_manager import parse_shortcut
 from history.store import HistoryStore
 from ui import theme
+from ui.sound import get_sound_manager
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ class SettingsWindow(QDialog):
         self.hotkey_manager = hotkey_manager
         self.double_tap_hook = double_tap_hook
         self.store = store or HistoryStore()
-        self.theme_tokens = theme.get_theme()
+        self.theme_tokens = theme.get_theme(theme_mode=getattr(self.settings, "theme", "midnight"))
         self._tester_thread: Optional[ApiKeyTesterThread] = None
 
         self._init_window()
@@ -208,9 +209,18 @@ class SettingsWindow(QDialog):
 
     def _init_window(self) -> None:
         self.setWindowTitle("Peachy Settings")
-        self.resize(480, 840)
+        self.resize(500, 720)
+        self.setMinimumSize(460, 500)
         self.setFont(theme.get_app_font(13))
         self.setStyleSheet(self._generate_stylesheet())
+
+    def apply_theme(self, theme_mode: Optional[str] = None) -> None:
+        """Apply a new theme mode to the settings window live."""
+        mode = theme_mode or getattr(self.settings, "theme", "midnight")
+        self.theme_tokens = theme.get_theme(theme_mode=mode)
+        self.setStyleSheet(self._generate_stylesheet())
+        if hasattr(self, "title_label") and self.title_label:
+            self.title_label.setStyleSheet(f"color: {self.theme_tokens.accent};")
 
     def _generate_stylesheet(self) -> str:
         t = self.theme_tokens
@@ -273,13 +283,35 @@ class SettingsWindow(QDialog):
             background-color: {t.accent};
             border-color: {t.accent};
         }}
+        QScrollArea {{
+            border: none;
+            background-color: transparent;
+        }}
+        QScrollBar:vertical {{
+            border: none;
+            background: transparent;
+            width: 8px;
+            margin: 0px;
+            border-radius: 4px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {t.border};
+            border-radius: 4px;
+            min-height: 24px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background: {t.accent};
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
+        }}
         """
 
     def _build_ui(self) -> None:
         t = self.theme_tokens
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(14)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(20, 16, 20, 16)
+        root_layout.setSpacing(12)
 
         # Header with mascot & title
         header_layout = QHBoxLayout()
@@ -291,7 +323,18 @@ class SettingsWindow(QDialog):
         header_layout.addWidget(self.title_label)
         header_layout.addStretch()
 
-        layout.addLayout(header_layout)
+        root_layout.addLayout(header_layout)
+
+        # Scrollable container for settings sections
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        scroll_content = QWidget()
+        layout = QVBoxLayout(scroll_content)
+        layout.setContentsMargins(4, 4, 12, 4)
+        layout.setSpacing(14)
 
         # 1. Shortcut Section
         shortcut_label = QLabel("Global Shortcuts")
@@ -449,6 +492,65 @@ class SettingsWindow(QDialog):
         # Divider
         layout.addWidget(self._create_divider())
 
+        # Appearance & Motion Section
+        appearance_title = QLabel("Appearance & Motion")
+        appearance_title.setFont(theme.get_app_font(13, bold=True))
+        layout.addWidget(appearance_title)
+
+        theme_row = QHBoxLayout()
+        theme_label = QLabel("Theme:")
+        theme_label.setFont(theme.get_app_font(12))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Midnight", "midnight")
+        self.theme_combo.addItem("Light", "light")
+        self.theme_combo.addItem("System", "system")
+        theme_row.addWidget(theme_label)
+        theme_row.addWidget(self.theme_combo, stretch=1)
+        layout.addLayout(theme_row)
+
+        self.reduce_motion_check = QCheckBox("Reduce motion (disable animations)")
+        self.reduce_motion_check.setToolTip("Disables window and transition animations across the application.")
+        layout.addWidget(self.reduce_motion_check)
+
+        # Divider
+        layout.addWidget(self._create_divider())
+
+        # Sound & Audio Section
+        sound_title = QLabel("Sound Effects")
+        sound_title.setFont(theme.get_app_font(13, bold=True))
+        layout.addWidget(sound_title)
+
+        self.sound_enabled_check = QCheckBox("Enable UI sound effects")
+        self.sound_enabled_check.toggled.connect(self._on_sound_toggled)
+        layout.addWidget(self.sound_enabled_check)
+
+        vol_row = QHBoxLayout()
+        vol_label = QLabel("Volume:")
+        vol_label.setFont(theme.get_app_font(12))
+        self.sound_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.sound_volume_slider.setRange(0, 100)
+        self.sound_volume_slider.setSingleStep(5)
+        self.sound_volume_slider.setPageStep(10)
+        self.sound_volume_slider.valueChanged.connect(self._on_volume_changed)
+
+        self.sound_volume_label = QLabel("35%")
+        self.sound_volume_label.setFont(theme.get_app_font(12))
+        self.sound_volume_label.setFixedWidth(42)
+
+        self.test_sound_btn = QPushButton("Test")
+        self.test_sound_btn.setFixedWidth(56)
+        self.test_sound_btn.setToolTip("Play a sample sound effect")
+        self.test_sound_btn.clicked.connect(self._on_test_sound)
+
+        vol_row.addWidget(vol_label)
+        vol_row.addWidget(self.sound_volume_slider, stretch=1)
+        vol_row.addWidget(self.sound_volume_label)
+        vol_row.addWidget(self.test_sound_btn)
+        layout.addLayout(vol_row)
+
+        # Divider
+        layout.addWidget(self._create_divider())
+
         # 6. Chat History Section
         history_title = QLabel("Chat History")
         history_title.setFont(theme.get_app_font(13, bold=True))
@@ -503,7 +605,10 @@ class SettingsWindow(QDialog):
 
         layout.addStretch()
 
-        # 6. Dialog Action Buttons
+        scroll_area.setWidget(scroll_content)
+        root_layout.addWidget(scroll_area, stretch=1)
+
+        # Dialog Action Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -526,7 +631,7 @@ class SettingsWindow(QDialog):
         self.save_btn.clicked.connect(self._save_and_apply)
         btn_layout.addWidget(self.save_btn)
 
-        layout.addLayout(btn_layout)
+        root_layout.addLayout(btn_layout)
 
     def _create_divider(self) -> QFrame:
         line = QFrame()
@@ -587,6 +692,26 @@ class SettingsWindow(QDialog):
         # Windows Startup
         self.startup_check.setChecked(is_launch_at_startup_enabled())
 
+        # Appearance & Motion
+        theme_val = getattr(self.settings, "theme", "midnight")
+        idx = self.theme_combo.findData(theme_val)
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+        else:
+            idx = self.theme_combo.findText(theme_val.capitalize())
+            if idx >= 0:
+                self.theme_combo.setCurrentIndex(idx)
+
+        self.reduce_motion_check.setChecked(getattr(self.settings, "reduce_motion", False))
+
+        # Sound
+        sound_on = getattr(self.settings, "sound_enabled", True)
+        self.sound_enabled_check.setChecked(sound_on)
+        vol = getattr(self.settings, "sound_volume", 35)
+        self.sound_volume_slider.setValue(vol)
+        self.sound_volume_label.setText(f"{vol}%")
+        self._on_sound_toggled(sound_on)
+
         # History settings
         self.history_shortcut_button.set_shortcut(getattr(self.settings, "history_hotkey", "Ctrl+Shift+H"))
         self.save_history_check.setChecked(getattr(self.settings, "save_history", False))
@@ -628,6 +753,20 @@ class SettingsWindow(QDialog):
 
     def _on_interval_changed(self, val: int) -> None:
         self.interval_label.setText(f"Interval: {val} ms")
+
+    def _on_sound_toggled(self, checked: bool) -> None:
+        self.sound_volume_slider.setEnabled(checked)
+        self.sound_volume_label.setEnabled(checked)
+        self.test_sound_btn.setEnabled(checked)
+
+    def _on_volume_changed(self, val: int) -> None:
+        self.sound_volume_label.setText(f"{val}%")
+
+    def _on_test_sound(self) -> None:
+        sm = get_sound_manager(self.settings)
+        sm.set_volume(self.sound_volume_slider.value())
+        sm.set_muted(not self.sound_enabled_check.isChecked())
+        sm.play("open")
 
     def _test_api_key(self) -> None:
         key = self.key_input.text().strip()
@@ -707,6 +846,22 @@ class SettingsWindow(QDialog):
         self.settings.save_thumbnails = self.save_thumbnails_check.isChecked()
         if self.settings.save_history:
             self.settings.save_history_prompted = True
+
+        # Appearance & Motion
+        theme_val = self.theme_combo.currentData()
+        if not theme_val:
+            theme_val = self.theme_combo.currentText().lower()
+        self.settings.theme = str(theme_val)
+        self.settings.reduce_motion = self.reduce_motion_check.isChecked()
+
+        # Sound
+        self.settings.sound_enabled = self.sound_enabled_check.isChecked()
+        self.settings.sound_volume = self.sound_volume_slider.value()
+
+        # Update SoundManager live
+        sm = get_sound_manager(self.settings)
+        sm.set_muted(not self.settings.sound_enabled)
+        sm.set_volume(self.settings.sound_volume)
 
         # 1. Save Settings to settings.json
         save_settings(self.settings)

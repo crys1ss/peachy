@@ -185,7 +185,11 @@ class PeachyApp(QObject):
         self.overlay_manager = OverlayManager()
 
         # 7. Peachy Popup Window
-        self.popup = PeachyPopup(pinned=self.settings.pinned, answer_length=self.settings.answer_length)
+        self.popup = PeachyPopup(
+            pinned=self.settings.pinned,
+            answer_length=self.settings.answer_length,
+            settings=self.settings,
+        )
 
         # 8. Chat History Store & Window
         self.history_store = HistoryStore()
@@ -279,6 +283,10 @@ class PeachyApp(QObject):
             if hasattr(self, "history_window") and self.history_window:
                 self.history_window.settings = new_settings
                 self.history_window.apply_theme(new_settings.theme)
+            if hasattr(self, "popup") and self.popup:
+                self.popup.settings = new_settings
+                if hasattr(self.popup, "apply_theme"):
+                    self.popup.apply_theme(new_settings.theme)
             if hasattr(self.popup, "set_pinned"):
                 self.popup.set_pinned(new_settings.pinned)
             else:
