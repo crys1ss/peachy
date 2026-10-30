@@ -26,7 +26,7 @@ from typing import Any, Callable, Generator, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CREATE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     title TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    thumbnail BLOB
+    thumbnail BLOB,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    title_locked INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'overlay'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -48,11 +51,27 @@ CREATE TABLE IF NOT EXISTS messages (
     text TEXT NOT NULL,
     created_at TEXT NOT NULL,
     has_image INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    status TEXT NOT NULL DEFAULT 'complete',
     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    mime TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    data BLOB,
+    thumb BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(pinned DESC, updated_at DESC);
 """
 
 
@@ -140,6 +159,51 @@ def create_thumbnail(image_data: Any) -> Optional[bytes]:
     except Exception as exc:
         logger.warning("Failed to generate thumbnail: %s", exc)
         return None
+
+
+def create_attachment_thumbnail(image_data: Any, max_dim: int = 256) -> bytes:
+    """Generate a 256 px PNG thumbnail for attachments.
+
+    Always kept so the transcript can still show a visual preview even when
+    full screenshot persistence is turned off.
+    Returns PNG bytes.
+    """
+    from PIL import Image
+
+    img = None
+    if isinstance(image_data, bytes):
+        img = Image.open(io.BytesIO(image_data))
+    elif isinstance(image_data, Image.Image):
+        img = image_data
+    elif hasattr(image_data, "save"):  # QImage or QPixmap
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+
+        ba = QByteArray()
+        buf = QBuffer(ba)
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        image_data.save(buf, "PNG")
+        img = Image.open(io.BytesIO(bytes(ba.data())))
+
+    if img is None:
+        raise ValueError("Invalid image_data provided for attachment thumbnail.")
+
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA")
+
+    w, h = img.size
+    if w > 0 and h > 0:
+        if max(w, h) > max_dim:
+            if w >= h:
+                target_w = max_dim
+                target_h = max(1, int(round(h * (target_w / float(w)))))
+            else:
+                target_h = max_dim
+                target_w = max(1, int(round(w * (target_h / float(h)))))
+            img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
 
 
 _RECOVERY_LOCK = threading.RLock()
@@ -312,13 +376,111 @@ class HistoryStore:
             raise
 
     def _ensure_schema(self) -> None:
-        """Execute table creation and schema version verification."""
+        """Execute table creation and schema version verification / migration."""
         with self.connect() as conn:
-            conn.executescript(CREATE_SCHEMA_SQL)
-            cur = conn.execute("SELECT version FROM schema_version LIMIT 1;")
-            row = cur.fetchone()
-            if row is None:
-                conn.execute("INSERT INTO schema_version (version) VALUES (?);", (SCHEMA_VERSION,))
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version';"
+            )
+            has_schema_ver = cur.fetchone() is not None
+
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations';"
+            )
+            has_conversations = cur.fetchone() is not None
+
+            current_ver: Optional[int] = None
+            if has_schema_ver:
+                cur = conn.execute("SELECT version FROM schema_version LIMIT 1;")
+                row = cur.fetchone()
+                if row is not None:
+                    current_ver = int(row[0])
+
+            if not has_conversations:
+                # Brand new DB: create schema v2 from scratch
+                conn.executescript(CREATE_SCHEMA_SQL)
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?);", (SCHEMA_VERSION,)
+                )
+                return
+
+            if current_ver is None:
+                current_ver = 1
+
+        if current_ver < SCHEMA_VERSION:
+            self._migrate_v1_to_v2()
+
+    def _migrate_v1_to_v2(self) -> None:
+        """Migrate database from schema v1 to schema v2 in a single transaction after backup."""
+        # 1. Back up database before running migration
+        try:
+            with sqlite3.connect(str(self.db_path), timeout=10.0) as cp_conn:
+                cp_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except Exception as cp_err:
+            logger.debug("WAL checkpoint prior to migration backup: %s", cp_err)
+
+        if self.db_path.name == "history.db":
+            bak_path = self.db_path.with_name("history.v1.bak")
+        else:
+            bak_path = self.db_path.with_name(f"{self.db_path.stem}.v1.bak")
+
+        try:
+            if bak_path.exists():
+                try:
+                    bak_path.unlink()
+                except OSError:
+                    pass
+            shutil.copy2(self.db_path, bak_path)
+            logger.info("Created pre-migration backup: %s -> %s", self.db_path, bak_path)
+        except Exception as bak_err:
+            logger.warning("Failed to create pre-migration backup %s: %s", bak_path, bak_err)
+
+        # 2. Run migration in one transaction
+        with self.connect() as conn:
+            # Idempotently add missing columns to conversations
+            cur = conn.execute("PRAGMA table_info(conversations);")
+            conv_cols = {r["name"] for r in cur.fetchall()}
+
+            if "pinned" not in conv_cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")
+            if "title_locked" not in conv_cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;")
+            if "source" not in conv_cols:
+                conn.execute("ALTER TABLE conversations ADD COLUMN source TEXT NOT NULL DEFAULT 'overlay';")
+
+            # Idempotently add missing columns to messages
+            cur = conn.execute("PRAGMA table_info(messages);")
+            msg_cols = {r["name"] for r in cur.fetchall()}
+
+            if "model" not in msg_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN model TEXT;")
+            if "status" not in msg_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'complete';")
+
+            # Create attachments table and indexes
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                    mime TEXT NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    data BLOB,
+                    thumb BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(pinned DESC, updated_at DESC);")
+
+            # Update schema_version
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);")
+            conn.execute("DELETE FROM schema_version;")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?);", (SCHEMA_VERSION,))
+
+        logger.info("Successfully migrated database at %s to schema version 2.", self.db_path)
 
     def _recover_corrupt_db(self) -> bool:
         """Back up corrupt database and all WAL/SHM artifacts, then remove originals.
@@ -400,6 +562,9 @@ class HistoryStore:
         has_image: bool = False,
         title: Optional[str] = None,
         thumbnail: Optional[bytes] = None,
+        model: Optional[str] = None,
+        status: str = "complete",
+        source: str = "overlay",
     ) -> int:
         """Atomically persist a user question and model answer exchange in a single transaction.
 
@@ -417,10 +582,10 @@ class HistoryStore:
                 conv_title = title or generate_title(question, answer)
                 cur = conn.execute(
                     """
-                    INSERT INTO conversations (title, created_at, updated_at, thumbnail)
-                    VALUES (?, ?, ?, ?);
+                    INSERT INTO conversations (title, created_at, updated_at, thumbnail, source)
+                    VALUES (?, ?, ?, ?, ?);
                     """,
-                    (conv_title, now_str, now_str, thumbnail),
+                    (conv_title, now_str, now_str, thumbnail, source),
                 )
                 target_conv_id = int(cur.lastrowid)
             else:
@@ -433,35 +598,124 @@ class HistoryStore:
             # Insert user question
             conn.execute(
                 """
-                INSERT INTO messages (conversation_id, role, text, created_at, has_image)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT INTO messages (conversation_id, role, text, created_at, has_image, status)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
-                (target_conv_id, "user", question, now_str, 1 if has_image else 0),
+                (target_conv_id, "user", question, now_str, 1 if has_image else 0, "complete"),
             )
 
             # Insert model answer
             conn.execute(
                 """
-                INSERT INTO messages (conversation_id, role, text, created_at, has_image)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT INTO messages (conversation_id, role, text, created_at, has_image, model, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
                 """,
-                (target_conv_id, "model", answer, now_str, 0),
+                (target_conv_id, "model", answer, now_str, 0, model, status),
             )
 
             return target_conv_id
 
-    def create_conversation(self, title: str, thumbnail: Optional[bytes] = None) -> int:
+    def create_conversation(
+        self,
+        title: str,
+        thumbnail: Optional[bytes] = None,
+        source: str = "overlay",
+        pinned: bool = False,
+    ) -> int:
         """Create a new conversation record. Returns new conversation ID."""
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO conversations (title, created_at, updated_at, thumbnail)
-                VALUES (?, ?, ?, ?);
+                INSERT INTO conversations (title, created_at, updated_at, thumbnail, source, pinned)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
-                (title, now_str, now_str, thumbnail),
+                (title, now_str, now_str, thumbnail, source, 1 if pinned else 0),
             )
             return int(cur.lastrowid)
+
+    def rename_conversation(self, conv_id: int, title: str) -> None:
+        """Rename a conversation and lock its title against automatic heuristic updates."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET title = ?, title_locked = 1, updated_at = ? WHERE id = ?;",
+                (title, now_str, conv_id),
+            )
+
+    def set_pinned(self, conv_id: int, pinned: bool) -> None:
+        """Pin or unpin a conversation."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET pinned = ? WHERE id = ?;",
+                (1 if pinned else 0, conv_id),
+            )
+
+    def add_attachment(
+        self,
+        message_id: int,
+        mime: str,
+        data: Optional[bytes],
+        thumb: bytes,
+        w: Optional[int] = None,
+        h: Optional[int] = None,
+    ) -> int:
+        """Store an attachment (screenshot or image) associated with a message.
+
+        Args:
+            message_id: Target message ID.
+            mime: MIME type string (e.g. 'image/png').
+            data: Full image bytes (or None when screenshot saving is turned off).
+            thumb: 256px thumbnail bytes (always persisted).
+            w: Width of full image in pixels (optional).
+            h: Height of full image in pixels (optional).
+
+        Returns:
+            The newly created attachment ID.
+        """
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO attachments (message_id, mime, width, height, data, thumb, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (message_id, mime, w, h, data, thumb, now_str),
+            )
+            conn.execute(
+                "UPDATE messages SET has_image = 1 WHERE id = ?;",
+                (message_id,),
+            )
+            return int(cur.lastrowid)
+
+    def get_attachment_data(self, attachment_id: int) -> Optional[bytes]:
+        """Retrieve full image bytes for an attachment, or None if data was not saved."""
+        with self.connect() as conn:
+            cur = conn.execute(
+                "SELECT data FROM attachments WHERE id = ?;",
+                (attachment_id,),
+            )
+            row = cur.fetchone()
+            if row and row["data"] is not None:
+                return bytes(row["data"])
+            return None
+
+    def delete_messages_from(self, conv_id: int, message_id: int) -> None:
+        """Delete messages in conversation with id >= message_id (inclusive).
+
+        Used for edit-and-resend and answer regeneration.
+        Cascades to associated attachments.
+        """
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ? AND id >= ?;",
+                (conv_id, message_id),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?;",
+                (now_str, conv_id),
+            )
 
     def add_message(
         self,
@@ -469,16 +723,18 @@ class HistoryStore:
         role: str,
         text: str,
         has_image: bool = False,
+        model: Optional[str] = None,
+        status: str = "complete",
     ) -> int:
         """Append a message to an existing conversation. Returns message ID."""
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO messages (conversation_id, role, text, created_at, has_image)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT INTO messages (conversation_id, role, text, created_at, has_image, model, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
                 """,
-                (conversation_id, role, text, now_str, 1 if has_image else 0),
+                (conversation_id, role, text, now_str, 1 if has_image else 0, model, status),
             )
             conn.execute(
                 """
@@ -501,34 +757,98 @@ class HistoryStore:
         """Retrieve conversation by ID."""
         with self.connect() as conn:
             cur = conn.execute(
-                "SELECT id, title, created_at, updated_at, thumbnail FROM conversations WHERE id = ?;",
+                """
+                SELECT id, title, created_at, updated_at, thumbnail, pinned, title_locked, source
+                FROM conversations
+                WHERE id = ?;
+                """,
                 (conversation_id,),
             )
             row = cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            d["pinned"] = bool(d.get("pinned", 0))
+            d["title_locked"] = bool(d.get("title_locked", 0))
+            return d
 
     def get_messages(self, conversation_id: int) -> List[dict[str, Any]]:
-        """Retrieve all messages for a conversation in chronological order."""
+        """Retrieve all messages for a conversation in chronological order.
+
+        Returns MessageDicts with attachments metadata (never full image bytes):
+        {
+            "id": int,
+            "conversation_id": int,
+            "role": "user" | "model",
+            "text": str,
+            "created_at": str,
+            "has_image": bool,
+            "model": Optional[str],
+            "status": "complete" | "error" | "stopped",
+            "attachments": [
+                {"id": int, "mime": str, "thumb": bytes, "has_full": bool}
+            ]
+        }
+        """
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                SELECT id, conversation_id, role, text, created_at, has_image
+                SELECT id, conversation_id, role, text, created_at, has_image, model, status
                 FROM messages
                 WHERE conversation_id = ?
                 ORDER BY id ASC;
                 """,
                 (conversation_id,),
             )
-            return [dict(r) for r in cur.fetchall()]
+            rows = cur.fetchall()
+            if not rows:
+                return []
+
+            msg_ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in msg_ids)
+            att_cur = conn.execute(
+                f"""
+                SELECT id, message_id, mime, thumb, (data IS NOT NULL) AS has_full
+                FROM attachments
+                WHERE message_id IN ({placeholders})
+                ORDER BY id ASC;
+                """,
+                msg_ids,
+            )
+            attachments_by_msg: dict[int, list[dict[str, Any]]] = {}
+            for ar in att_cur.fetchall():
+                m_id = ar["message_id"]
+                attachments_by_msg.setdefault(m_id, []).append({
+                    "id": ar["id"],
+                    "mime": ar["mime"],
+                    "thumb": bytes(ar["thumb"]),
+                    "has_full": bool(ar["has_full"]),
+                })
+
+            result = []
+            for r in rows:
+                m_id = r["id"]
+                result.append({
+                    "id": m_id,
+                    "conversation_id": r["conversation_id"],
+                    "role": r["role"],
+                    "text": r["text"],
+                    "created_at": r["created_at"],
+                    "has_image": bool(r["has_image"]),
+                    "model": r["model"],
+                    "status": r["status"] if r["status"] is not None else "complete",
+                    "attachments": attachments_by_msg.get(m_id, []),
+                })
+            return result
 
     def get_last_messages(self, conversation_id: int, limit: int = 20) -> List[dict[str, Any]]:
-        """Retrieve up to the last `limit` messages in chronological order."""
+        """Retrieve up to the last `limit` messages in chronological order with attachments metadata."""
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                SELECT id, conversation_id, role, text, created_at, has_image
+                SELECT id, conversation_id, role, text, created_at, has_image, model, status
                 FROM (
-                    SELECT id, conversation_id, role, text, created_at, has_image
+                    SELECT id, conversation_id, role, text, created_at, has_image, model, status
                     FROM messages
                     WHERE conversation_id = ?
                     ORDER BY id DESC
@@ -538,32 +858,108 @@ class HistoryStore:
                 """,
                 (conversation_id, limit),
             )
-            return [dict(r) for r in cur.fetchall()]
+            rows = cur.fetchall()
+            if not rows:
+                return []
+
+            msg_ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in msg_ids)
+            att_cur = conn.execute(
+                f"""
+                SELECT id, message_id, mime, thumb, (data IS NOT NULL) AS has_full
+                FROM attachments
+                WHERE message_id IN ({placeholders})
+                ORDER BY id ASC;
+                """,
+                msg_ids,
+            )
+            attachments_by_msg: dict[int, list[dict[str, Any]]] = {}
+            for ar in att_cur.fetchall():
+                m_id = ar["message_id"]
+                attachments_by_msg.setdefault(m_id, []).append({
+                    "id": ar["id"],
+                    "mime": ar["mime"],
+                    "thumb": bytes(ar["thumb"]),
+                    "has_full": bool(ar["has_full"]),
+                })
+
+            result = []
+            for r in rows:
+                m_id = r["id"]
+                result.append({
+                    "id": m_id,
+                    "conversation_id": r["conversation_id"],
+                    "role": r["role"],
+                    "text": r["text"],
+                    "created_at": r["created_at"],
+                    "has_image": bool(r["has_image"]),
+                    "model": r["model"],
+                    "status": r["status"] if r["status"] is not None else "complete",
+                    "attachments": attachments_by_msg.get(m_id, []),
+                })
+            return result
 
     def list_conversations(self, query: Optional[str] = None) -> List[dict[str, Any]]:
-        """List conversations ordered by updated_at DESC, optionally filtered by message text."""
+        """List conversations ordered by pinned DESC, updated_at DESC, id DESC.
+
+        Returns:
+            List of dicts with keys: id, title, updated_at, pinned, preview, source
+            (and created_at, thumbnail for backwards compatibility).
+        """
         with self.connect() as conn:
             if query and query.strip():
                 pattern = f"%{query.strip()}%"
                 cur = conn.execute(
                     """
-                    SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.thumbnail
+                    SELECT 
+                        c.id,
+                        c.title,
+                        c.created_at,
+                        c.updated_at,
+                        c.thumbnail,
+                        c.pinned,
+                        c.title_locked,
+                        c.source,
+                        COALESCE(
+                            (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1),
+                            ''
+                        ) AS preview
                     FROM conversations c
-                    JOIN messages m ON c.id = m.conversation_id
-                    WHERE m.text LIKE ?
-                    ORDER BY c.updated_at DESC, c.id DESC;
+                    WHERE c.title LIKE ? OR c.id IN (
+                        SELECT conversation_id FROM messages WHERE text LIKE ?
+                    )
+                    ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC;
                     """,
-                    (pattern,),
+                    (pattern, pattern),
                 )
             else:
                 cur = conn.execute(
                     """
-                    SELECT id, title, created_at, updated_at, thumbnail
-                    FROM conversations
-                    ORDER BY updated_at DESC, id DESC;
+                    SELECT 
+                        c.id,
+                        c.title,
+                        c.created_at,
+                        c.updated_at,
+                        c.thumbnail,
+                        c.pinned,
+                        c.title_locked,
+                        c.source,
+                        COALESCE(
+                            (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1),
+                            ''
+                        ) AS preview
+                    FROM conversations c
+                    ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC;
                     """
                 )
-            return [dict(r) for r in cur.fetchall()]
+
+            res = []
+            for r in cur.fetchall():
+                d = dict(r)
+                d["pinned"] = bool(d.get("pinned", 0))
+                d["title_locked"] = bool(d.get("title_locked", 0))
+                res.append(d)
+            return res
 
     def search_conversations(self, query: str) -> List[dict[str, Any]]:
         """Search conversations containing query in message text."""

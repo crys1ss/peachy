@@ -618,4 +618,53 @@ Generated 5 preview screenshots into `docs/screens/`:
 - All 136 prior unit and integration tests continue to pass without regression.
 
 
+---
+
+## Task PCH-104 Summary (Track B Core)
+
+### What Works & Is Done
+1. **History Schema v2 & Idempotent Migration**:
+   - `SCHEMA_VERSION` bumped to 2.
+   - Schema v2 adds `pinned`, `title_locked`, `source` to `conversations`; adds `model`, `status` to `messages`.
+   - Adds `attachments` table with cascade delete on `messages(id)` and indexes.
+   - Pre-migration backup creates `<stem>.v1.bak` after checkpointing WAL.
+   - Migration runs in a single transaction and is completely idempotent against existing or re-run schemas.
+   - Fully compatible with PCH-101 corruption recovery and degraded session fallback.
+2. **Store Methods**:
+   - `rename_conversation(conv_id, title)`: sets `title_locked=1`.
+   - `set_pinned(conv_id, pinned: bool)`: toggles pinned state.
+   - `list_conversations(query=None)`: returns `{id, title, updated_at, pinned, preview, source}`, ordered by `pinned DESC, updated_at DESC, id DESC`.
+   - `add_attachment(message_id, mime, data, thumb, w, h)`: persists attachment and thumbnail.
+   - `get_attachment_data(attachment_id)`: retrieves full bytes (or None when screenshot saving is off).
+   - `delete_messages_from(conv_id, message_id)`: deletes messages with id >= message_id (inclusive) and cascades to attachments.
+   - `get_messages(conv_id)` and `get_last_messages(conv_id)`: return `MessageDict`s with `attachments` metadata without exposing full image bytes.
+3. **Pure Function Conversation Grouping ([history/grouping.py](file:///c:/Users/TANAY/Downloads/Peachy/history/grouping.py))**:
+   - `group_conversations(rows, now)`: groups into "Pinned", "Today", "Yesterday", "Previous 7 days", "Previous 30 days", and chronologically descending month buckets.
+   - Pure function with full boundary testing (midnight boundary, month rollover, pinned exclusion, non-empty buckets only).
+4. **Settings v2 Fields & Validation ([config/settings.py](file:///c:/Users/TANAY/Downloads/Peachy/config/settings.py))**:
+   - Added `display_name`, `accent`, `font_scale`, `sidebar_collapsed`, `main_window_geometry`, `close_to_tray`, `fallback_models_enabled`.
+   - Clamping validation for `accent` (`"peach"` fallback) and `font_scale` (`100` fallback).
+5. **AppController Main Window & Attachment Signals ([core/app_controller.py](file:///c:/Users/TANAY/Downloads/Peachy/core/app_controller.py))**:
+   - Added `open_in_main_window = Signal(int)` and `attachment_captured = Signal(bytes)`.
+   - Added `capture_for_attachment()` mode and wired cancellation.
+6. **Test Doubles ([tests/fakes/](file:///c:/Users/TANAY/Downloads/Peachy/tests/fakes/))**:
+   - `FakeProvider`: implements `ask()` and `ask_stream()` with scripted answers/chunks, recorded calls, and pre-stream or mid-stream error injection.
+   - `FakeChatSession`: implements REDESIGN.md §7 contract with all signals and methods for Track A UI development.
+7. **Dependency Pinning**:
+   - Added `pygments==2.21.0` to `requirements.txt` (verified on PyPI https://pypi.org/project/Pygments/2.21.0/).
+
+### Verified by Automated Tests (213/213 pytest tests passed in 12.35s)
+- `tests/test_history_v2.py`: Real v1 fixture migration, `.v1.bak` backup, idempotency, v2 store methods, attachments lifecycle, and thumbnail generation.
+- `tests/test_grouping.py`: Midnight boundary, month rollover, pinned exclusion, non-empty buckets, descending months.
+- `tests/test_settings_v2.py`: Default values, round-trip, unknown value clamping.
+- `tests/test_fakes.py`: FakeProvider ask/stream/errors, FakeChatSession signals and actions.
+- `tests/test_controller_attachment.py`: Attachment capture mode, cancellation, and main window forwarding.
+- All 184 prior unit and integration tests continue to pass.
+
+### Needs Manual Check (Physical User Testing)
+- None required for Track B core data structures; ready for Track A integration.
+
+### Known Bugs
+- None.
+
 

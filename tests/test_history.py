@@ -21,6 +21,7 @@ from core.app_controller import AppController
 from core.hotkey_manager import HotkeyManager, parse_shortcut
 from core.state_manager import AppState, StateManager
 from history.store import (
+    SCHEMA_VERSION,
     HistoryStore,
     create_thumbnail,
     generate_title,
@@ -211,7 +212,7 @@ def test_corrupt_database_recovery(tmp_path: Path):
         cur = conn.execute("SELECT version FROM schema_version LIMIT 1;")
         row = cur.fetchone()
         assert row is not None
-        assert row["version"] == 1
+        assert row["version"] == SCHEMA_VERSION
 
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()}
         assert {"schema_version", "conversations", "messages"}.issubset(tables)

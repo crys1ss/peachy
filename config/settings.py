@@ -48,6 +48,13 @@ class Settings:
     reduce_motion: bool = False
     sound_enabled: bool = True
     sound_volume: int = 35  # default 35 percent
+    display_name: str = ""
+    accent: str = "peach"  # "peach" | "coral" | "rose" | "lavender"
+    font_scale: int = 100  # 90 | 100 | 110 | 125
+    sidebar_collapsed: bool = False
+    main_window_geometry: str = ""  # base64 of QWidget.saveGeometry()
+    close_to_tray: bool = True
+    fallback_models_enabled: bool = True
 
 
 
@@ -144,6 +151,25 @@ def load_settings(path: Path | str | None = None) -> Settings:
             filtered_data["outside_shape"] = "blank"
         if filtered_data.get("theme") not in ("midnight", "light", "system"):
             filtered_data["theme"] = "midnight"
+        if filtered_data.get("accent") not in ("peach", "coral", "rose", "lavender"):
+            filtered_data["accent"] = "peach"
+        try:
+            val = int(filtered_data.get("font_scale", 100))
+            if val not in (90, 100, 110, 125):
+                val = 100
+            filtered_data["font_scale"] = val
+        except (ValueError, TypeError):
+            filtered_data["font_scale"] = 100
+        if not isinstance(filtered_data.get("display_name"), str):
+            filtered_data["display_name"] = ""
+        if not isinstance(filtered_data.get("main_window_geometry"), str):
+            filtered_data["main_window_geometry"] = ""
+        if "sidebar_collapsed" in filtered_data:
+            filtered_data["sidebar_collapsed"] = bool(filtered_data["sidebar_collapsed"])
+        if "close_to_tray" in filtered_data:
+            filtered_data["close_to_tray"] = bool(filtered_data["close_to_tray"])
+        if "fallback_models_enabled" in filtered_data:
+            filtered_data["fallback_models_enabled"] = bool(filtered_data["fallback_models_enabled"])
 
         return Settings(**filtered_data)
     except Exception as exc:
