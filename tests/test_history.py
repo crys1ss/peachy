@@ -188,7 +188,7 @@ def test_history_store_crud(tmp_path: Path):
 # 4. Corrupt database recovery
 # ---------------------------------------------------------------------------
 def test_corrupt_database_recovery(tmp_path: Path):
-    """Corrupt database file is backed up to .bak and a fresh DB is created without crashing."""
+    """Corrupt database file is backed up to .bak, recreated at original path, and keeps store.db_path."""
     db_file = tmp_path / "corrupt_history.db"
     bak_file = tmp_path / "corrupt_history.db.bak"
 
@@ -198,16 +198,35 @@ def test_corrupt_database_recovery(tmp_path: Path):
     # Initializing store should recover safely
     store = HistoryStore(db_path=db_file)
 
+    # 1. The corrupt database is backed up
     assert bak_file.exists()
     assert bak_file.read_bytes() == b"THIS IS CORRUPT NON-SQLITE DATA BUFFER 1234567890"
 
-    # Fresh DB works normally
+    # 2. Original database path is preserved (NOT redirected to temp fallback)
+    assert store.db_path == db_file
+    assert db_file.exists()
+
+    # 3. The recreated database has a valid schema and version
+    with store.connect() as conn:
+        cur = conn.execute("SELECT version FROM schema_version LIMIT 1;")
+        row = cur.fetchone()
+        assert row is not None
+        assert row["version"] == 1
+
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()}
+        assert {"schema_version", "conversations", "messages"}.issubset(tables)
+
+    # 4. Conversations can be saved and retrieved after recovery
     cid = store.create_conversation("Recovered DB Conv")
     assert cid > 0
     store.add_message(cid, "user", "Hello again")
     convs = store.list_conversations()
     assert len(convs) == 1
+    assert convs[0]["id"] == cid
     assert convs[0]["title"] == "Recovered DB Conv"
+    msgs = store.get_messages(cid)
+    assert len(msgs) == 1
+    assert msgs[0]["text"] == "Hello again"
 
 
 # ---------------------------------------------------------------------------
@@ -681,3 +700,39 @@ def test_history_worker_concurrent_save(tmp_path: Path, qtbot):
 
     popup.close()
     controller.shutdown()
+
+
+
+def test_corrupt_database_recovery_failure_does_not_falsely_report_success(tmp_path: Path):
+    """A failed recovery (e.g. file lock or permissions) returns False and does not falsely report success."""
+    db_file = tmp_path / "locked_corrupt.db"
+    db_file.write_bytes(b"CORRUPT DATA")
+
+    store = HistoryStore.__new__(HistoryStore)
+    store.db_path = db_file
+
+    # Simulate unlink failure (e.g. file locked by another process)
+    with patch.object(Path, "unlink", side_effect=OSError("Permission denied: file in use")):
+        res = store._recover_corrupt_db()
+        assert res is False
+
+
+def test_normal_production_database_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Test normal production APPDATA path resolution without relying exclusively on autouse fixture."""
+    monkeypatch.delenv("PEACHY_HISTORY_DB_PATH", raising=False)
+    fake_appdata = tmp_path / "FakeProductionAppData"
+    monkeypatch.setenv("APPDATA", str(fake_appdata))
+
+    default_path = get_default_history_db_path()
+    expected_path = fake_appdata / "Peachy" / "history.db"
+    assert default_path == expected_path
+
+    # Initializing with default path creates the production DB at expected path
+    store = HistoryStore()
+    assert store.db_path == expected_path
+    assert expected_path.exists()
+    cid = store.create_conversation("Production DB Test")
+    assert cid > 0
+    conv = store.get_conversation(cid)
+    assert conv is not None
+    assert conv["title"] == "Production DB Test"

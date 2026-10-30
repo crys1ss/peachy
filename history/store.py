@@ -175,25 +175,42 @@ class HistoryStore:
         """Initialize database schema, backing up and recovering if corrupt or inaccessible."""
         try:
             self._ensure_schema()
+            return
         except sqlite3.DatabaseError as exc:
-            logger.warning("History database corrupt or inaccessible (%s). Backing up and recreating fresh DB.", exc)
+            logger.warning(
+                "History database at %s corrupt or inaccessible (%s). Attempting backup and recreation.",
+                self.db_path,
+                exc,
+            )
             recovered = self._recover_corrupt_db()
             if recovered:
                 try:
                     self._ensure_schema()
+                    logger.info("Successfully recreated fresh history database at original path %s.", self.db_path)
                     return
                 except Exception as rec_err:
-                    logger.warning("Re-initializing recovered DB failed: %s", rec_err)
+                    logger.error(
+                        "Re-initializing schema at original path %s failed after corrupt DB removal: %s",
+                        self.db_path,
+                        rec_err,
+                    )
 
+            # ONLY reach fallback if original path is genuinely unusable/inaccessible (e.g. read-only volume, permissions)
             fallback_dir = Path(tempfile.gettempdir()) / "peachy_history"
             try:
                 fallback_dir.mkdir(parents=True, exist_ok=True)
                 fallback_db = fallback_dir / f"fallback_{os.getpid()}_{self.db_path.name}"
-                logger.warning("Falling back to temporary database at %s", fallback_db)
+                logger.error(
+                    "DATABASE RECOVERY FAILED at original path %s. Redirecting session to temporary database at %s. "
+                    "Warning: chat history in this temporary database will not persist across app restarts.",
+                    self.db_path,
+                    fallback_db,
+                )
                 self.db_path = fallback_db
                 self._ensure_schema()
             except Exception as fb_err:
-                logger.error("Failed to initialize fallback database: %s", fb_err)
+                logger.critical("Fatal: failed to initialize fallback history database at %s: %s", fallback_dir, fb_err)
+                raise
 
     def _ensure_schema(self) -> None:
         """Execute table creation and schema version verification."""
@@ -204,17 +221,32 @@ class HistoryStore:
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?);", (SCHEMA_VERSION,))
 
-    def _recover_corrupt_db(self) -> None:
-        """Back up corrupt database to history.db.bak and delete the original."""
+    def _recover_corrupt_db(self) -> bool:
+        """Back up corrupt database to history.db.bak and delete the original.
+
+        Returns:
+            True if corrupt database was safely backed up and removed, allowing the original
+            path to be cleanly recreated.
+            False if backup or removal failed.
+        """
+        if not self.db_path.exists():
+            return False
+
         bak_path = self.db_path.with_name(self.db_path.name + ".bak")
         try:
-            if self.db_path.exists():
-                shutil.copy2(self.db_path, bak_path)
-                logger.info("Corrupt database backed up to %s", bak_path)
+            if bak_path.exists():
                 try:
-                    self.db_path.unlink()
-                except OSError as unl_err:
-                    logger.warning("Could not unlink corrupt db file: %s", unl_err)
+                    bak_path.unlink()
+                except OSError as unl_bak_err:
+                    logger.warning("Could not remove existing backup %s: %s", bak_path, unl_bak_err)
+
+            shutil.copy2(self.db_path, bak_path)
+            logger.info("Corrupt database successfully backed up to %s", bak_path)
+
+            self.db_path.unlink()
+            if self.db_path.exists():
+                logger.error("Failed to remove corrupt database file %s: file still exists.", self.db_path)
+                return False
 
             # Also clear any WAL/SHM companion files
             for ext in ("-wal", "-shm"):
@@ -222,10 +254,13 @@ class HistoryStore:
                 if companion.exists():
                     try:
                         companion.unlink()
-                    except OSError:
-                        pass
+                    except OSError as comp_err:
+                        logger.warning("Could not remove companion file %s: %s", companion, comp_err)
+
+            return True
         except Exception as exc:
-            logger.warning("Failed during corrupt DB recovery backup: %s", exc)
+            logger.error("Failed during corrupt DB recovery backup for %s: %s", self.db_path, exc)
+            return False
 
     def create_conversation(self, title: str, thumbnail: Optional[bytes] = None) -> int:
         """Create a new conversation record. Returns new conversation ID."""
