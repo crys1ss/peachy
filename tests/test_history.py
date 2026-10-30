@@ -335,7 +335,11 @@ def test_saving_on_writes_conversation_and_messages(tmp_path: Path, qtbot):
     assert state_mgr.state == AppState.ASKING
     controller.on_send_question("Save this turn")
     qtbot.waitUntil(lambda: state_mgr.state == AppState.ANSWERING, timeout=2000)
-    qtbot.waitUntil(lambda: len(store.list_conversations()) == 1, timeout=2000)
+    qtbot.waitUntil(
+        lambda: len(store.list_conversations()) == 1
+        and len(store.get_messages(store.list_conversations()[0]["id"])) == 2,
+        timeout=3000,
+    )
 
     convs = store.list_conversations()
     assert len(convs) == 1
@@ -592,3 +596,88 @@ def test_history_window_ui(tmp_path: Path, qtbot):
         assert win.right_stack.currentIndex() == 0
 
     win.close()
+
+
+# ---------------------------------------------------------------------------
+# 12. PCH-101 Regression Tests: HistoryStore Isolation & Worker Concurrency
+# ---------------------------------------------------------------------------
+def test_history_store_custom_env_var_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Regression test: PEACHY_HISTORY_DB_PATH overrides default APPDATA location."""
+    custom_db = tmp_path / "custom_env_override.db"
+    monkeypatch.setenv("PEACHY_HISTORY_DB_PATH", str(custom_db))
+
+    store = HistoryStore()
+    assert store.db_path == custom_db
+    cid = store.create_conversation("Env Override Test")
+    assert cid > 0
+    assert custom_db.exists()
+
+
+def test_history_store_inaccessible_path_fallback(tmp_path: Path):
+    """Regression test: Inaccessible or invalid DB paths recover to temp DB without raising."""
+    invalid_path = Path("Z:\\nonexistent_drive_peachy_test_123\\history.db")
+    store = HistoryStore(db_path=invalid_path)
+
+    # Should have recovered to fallback temp DB without crashing
+    assert store.db_path != invalid_path
+    assert "fallback" in store.db_path.name or store.db_path.exists()
+    cid = store.create_conversation("Fallback Path Test")
+    assert cid > 0
+    conv = store.get_conversation(cid)
+    assert conv is not None
+    assert conv["title"] == "Fallback Path Test"
+
+
+def test_history_worker_concurrent_save(tmp_path: Path, qtbot):
+    """Regression test: Ensure sequential background worker turns commit without race conditions."""
+    db_file = tmp_path / "concurrent_save_test.db"
+    store = HistoryStore(db_path=db_file)
+    settings = Settings(save_history=True, save_thumbnails=False, save_history_prompted=True)
+
+    state_mgr = StateManager()
+    hotkey_mgr = HotkeyManager()
+    tray_mgr = TrayManager()
+    overlay_mgr = OverlayManager()
+    popup = PeachyPopup()
+    provider = FakeAIProvider("Turn response")
+
+    controller = AppController(
+        state_manager=state_mgr,
+        hotkey_manager=hotkey_mgr,
+        tray_manager=tray_mgr,
+        overlay_manager=overlay_mgr,
+        popup=popup,
+        provider=provider,
+        settings=settings,
+        history_store=store,
+    )
+    qtbot.addWidget(popup)
+
+    state_mgr.transition_to(AppState.CAPTURING)
+    state_mgr.transition_to(AppState.SELECTING)
+    img = QImage(120, 80, QImage.Format.Format_RGB32)
+    img.fill(QColor(0, 255, 0))
+    controller.overlay_manager.last_selection_rect = QRect(0, 0, 120, 80)
+    controller.on_crop_confirmed(img)
+
+    controller.on_send_question("Turn 1 Question")
+    qtbot.waitUntil(
+        lambda: len(store.list_conversations()) == 1
+        and len(store.get_messages(store.list_conversations()[0]["id"])) == 2,
+        timeout=3000,
+    )
+
+    # Send a follow-up
+    controller.on_send_followup("Turn 2 Question")
+    cid = store.list_conversations()[0]["id"]
+    qtbot.waitUntil(lambda: len(store.get_messages(cid)) == 4, timeout=3000)
+
+    msgs = store.get_messages(cid)
+    assert len(msgs) == 4
+    assert msgs[0]["text"] == "Turn 1 Question"
+    assert msgs[1]["text"] == "Turn response"
+    assert msgs[2]["text"] == "Turn 2 Question"
+    assert msgs[3]["text"] == "Turn response"
+
+    popup.close()
+    controller.shutdown()

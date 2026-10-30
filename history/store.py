@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import tempfile
 from typing import Any, Generator, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,17 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated
 
 
 def get_default_history_db_path() -> Path:
-    """Return default path to history.db at %APPDATA%\\Peachy\\history.db."""
+    r"""Return default path to history.db.
+
+    Lookup order:
+    1. PEACHY_HISTORY_DB_PATH environment variable (for testing & isolated runs)
+    2. %APPDATA%\Peachy\history.db (standard Windows user data)
+    3. ~/.config/Peachy/history.db (standard fallback)
+    """
+    env_db = os.environ.get("PEACHY_HISTORY_DB_PATH")
+    if env_db and env_db.strip():
+        return Path(env_db.strip())
+
     appdata = os.environ.get("APPDATA")
     if appdata:
         base_dir = Path(appdata)
@@ -134,7 +145,10 @@ class HistoryStore:
 
     def __init__(self, db_path: Optional[Path | str] = None):
         self.db_path = Path(db_path) if db_path is not None else get_default_history_db_path()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as dir_err:
+            logger.warning("Could not create history directory for %s: %s", self.db_path, dir_err)
         self._init_db()
 
     @contextmanager
@@ -158,13 +172,28 @@ class HistoryStore:
             conn.close()
 
     def _init_db(self) -> None:
-        """Initialize database schema, backing up and recovering if corrupt."""
+        """Initialize database schema, backing up and recovering if corrupt or inaccessible."""
         try:
             self._ensure_schema()
         except sqlite3.DatabaseError as exc:
-            logger.warning("History database corrupt (%s). Backing up and recreating fresh DB.", exc)
-            self._recover_corrupt_db()
-            self._ensure_schema()
+            logger.warning("History database corrupt or inaccessible (%s). Backing up and recreating fresh DB.", exc)
+            recovered = self._recover_corrupt_db()
+            if recovered:
+                try:
+                    self._ensure_schema()
+                    return
+                except Exception as rec_err:
+                    logger.warning("Re-initializing recovered DB failed: %s", rec_err)
+
+            fallback_dir = Path(tempfile.gettempdir()) / "peachy_history"
+            try:
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                fallback_db = fallback_dir / f"fallback_{os.getpid()}_{self.db_path.name}"
+                logger.warning("Falling back to temporary database at %s", fallback_db)
+                self.db_path = fallback_db
+                self._ensure_schema()
+            except Exception as fb_err:
+                logger.error("Failed to initialize fallback database: %s", fb_err)
 
     def _ensure_schema(self) -> None:
         """Execute table creation and schema version verification."""
