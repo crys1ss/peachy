@@ -29,6 +29,7 @@ from core.state_manager import AppState, StateManager
 from core.worker import GeminiWorker
 from history.store import HistoryStore, create_thumbnail, generate_title
 from history.worker import HistoryDbWorker
+from ui.sound import get_sound_manager
 from ui.peachy_popup import PeachyPopup
 from ui.tray_manager import TrayManager
 
@@ -61,6 +62,7 @@ class AppController(QObject):
         self.popup = popup
         self.provider = provider or GeminiProvider()
         self.settings = settings or load_settings()
+        self.sound_manager = get_sound_manager(self.settings)
         self.history_store = history_store or HistoryStore()
         self.history_window = history_window
         self.overlay_manager.mode = getattr(self.settings, "selection_mode", "freehand")
@@ -374,8 +376,12 @@ class AppController(QObject):
                 last_text = p.get("text", "") if isinstance(p, dict) else str(p)
             self._save_current_completed_turn(last_text)
 
+    def _save_to_history(self, answer_text: str) -> None:
+        """Persist completed turn to history (delegates to _save_current_completed_turn)."""
+        self._save_current_completed_turn(answer_text)
+
     def _save_current_completed_turn(self, answer_text: str) -> None:
-        """Save completed turn off the UI thread via HistoryDbWorker."""
+        """Save completed turn off the UI thread via HistoryDbWorker and HistoryStore.save_exchange."""
         if not getattr(self.settings, "save_history", False):
             return
 
@@ -389,43 +395,21 @@ class AppController(QObject):
 
         def task():
             try:
-                from datetime import datetime
+                title = generate_title(first_q, answer_text) if is_new_conv else None
+                thumbnail = create_thumbnail(first_img) if (is_new_conv and save_thumbs and first_img) else None
+                saved_id = self.history_store.save_exchange(
+                    conv_id=conv_id,
+                    question=first_q if is_new_conv else curr_q,
+                    answer=answer_text,
+                    has_image=bool(first_img if is_new_conv else curr_img),
+                    title=title,
+                    thumbnail=thumbnail,
+                )
+                self._current_conversation_id = saved_id
                 if is_new_conv:
-                    title = generate_title(first_q, answer_text)
-                    thumbnail = create_thumbnail(first_img) if save_thumbs and first_img else None
-                    with self.history_store.connect() as conn:
-                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                        cur = conn.execute(
-                            "INSERT INTO conversations (title, created_at, updated_at, thumbnail) VALUES (?, ?, ?, ?);",
-                            (title, now_str, now_str, thumbnail),
-                        )
-                        new_id = int(cur.lastrowid)
-                        self._current_conversation_id = new_id
-                        conn.execute(
-                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
-                            (new_id, "user", first_q, now_str, int(bool(first_img))),
-                        )
-                        conn.execute(
-                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
-                            (new_id, "model", answer_text, now_str, 0),
-                        )
-                    logger.info("Saved new conversation %d ('%s') to history.", new_id, title)
+                    logger.info("Saved new conversation %d ('%s') to history.", saved_id, title)
                 else:
-                    with self.history_store.connect() as conn:
-                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                        conn.execute(
-                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
-                            (conv_id, "user", curr_q, now_str, int(bool(curr_img))),
-                        )
-                        conn.execute(
-                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
-                            (conv_id, "model", answer_text, now_str, 0),
-                        )
-                        conn.execute(
-                            "UPDATE conversations SET updated_at = ? WHERE id = ?;",
-                            (now_str, conv_id),
-                        )
-                    logger.info("Appended message to conversation %d in history.", conv_id)
+                    logger.info("Appended message to conversation %d in history.", saved_id)
             except Exception as exc:
                 logger.warning("Failed to save conversation to history: %s", exc)
 

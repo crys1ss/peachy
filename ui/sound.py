@@ -122,6 +122,15 @@ class SoundManager(QObject):
         """Get current volume percentage (0 to 100)."""
         return self._volume
 
+    def update_settings(self, settings: Settings) -> None:
+        """Update live settings, applying sound_enabled and sound_volume."""
+        self.settings = settings
+        if hasattr(settings, "sound_enabled"):
+            self._muted = not getattr(settings, "sound_enabled", True)
+        if hasattr(settings, "sound_volume"):
+            vol = getattr(settings, "sound_volume", 35)
+            self.set_volume(vol)
+
     def play(self, sound_name: str) -> bool:
         """Play a named sound effect with rate limiting and fallback.
 
@@ -175,10 +184,10 @@ _GLOBAL_SOUND_MANAGER: Optional[SoundManager] = None
 
 
 def get_sound_manager(settings: Optional[Settings] = None) -> SoundManager:
-    """Return shared global SoundManager instance."""
+    """Return shared global SoundManager instance, updating settings if provided."""
     global _GLOBAL_SOUND_MANAGER
     if _GLOBAL_SOUND_MANAGER is None:
         _GLOBAL_SOUND_MANAGER = SoundManager(settings)
     elif settings is not None:
-        _GLOBAL_SOUND_MANAGER.settings = settings
+        _GLOBAL_SOUND_MANAGER.update_settings(settings)
     return _GLOBAL_SOUND_MANAGER

@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from typing import Any, Callable, Generator, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -216,6 +217,14 @@ class HistoryStore:
         """Initialize database schema, backing up and recovering if corrupt or inaccessible."""
         if not self._is_valid_sqlite_header():
             with _RECOVERY_LOCK:
+                # Double-checked locking: check if another thread recovered the database while waiting
+                if self._is_valid_sqlite_header():
+                    try:
+                        self._ensure_schema()
+                        return
+                    except sqlite3.DatabaseError:
+                        pass
+
                 logger.warning(
                     "History database at %s has invalid header (not an SQLite database). Initiating synchronized recovery.",
                     self.db_path,
@@ -357,10 +366,19 @@ class HistoryStore:
 
         # 2. Strict removal and verification of all original files
         for src_file in files_to_backup:
-            try:
-                src_file.unlink()
-            except OSError as unl_err:
-                logger.error("Failed to remove database artifact %s: %s. Aborting recovery.", src_file, unl_err)
+            unlinked = False
+            last_err = None
+            for _attempt in range(5):
+                try:
+                    src_file.unlink()
+                    unlinked = True
+                    break
+                except OSError as unl_err:
+                    last_err = unl_err
+                    time.sleep(0.05)
+
+            if not unlinked:
+                logger.error("Failed to remove database artifact %s: %s. Aborting recovery.", src_file, last_err)
                 return False
 
             if src_file.exists():
@@ -373,6 +391,64 @@ class HistoryStore:
             self.db_path,
         )
         return True
+
+    def save_exchange(
+        self,
+        conv_id: Optional[int],
+        question: str,
+        answer: str,
+        has_image: bool = False,
+        title: Optional[str] = None,
+        thumbnail: Optional[bytes] = None,
+    ) -> int:
+        """Atomically persist a user question and model answer exchange in a single transaction.
+
+        If conv_id is None, creates a new conversation with title (generating one if omitted)
+        and optional thumbnail, then appends both the user question and model answer.
+        If conv_id is provided, appends the user question and model answer, and updates the
+        conversation's updated_at timestamp.
+
+        Returns:
+            The conversation ID (newly created or existing).
+        """
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        with self.connect() as conn:
+            if conv_id is None:
+                conv_title = title or generate_title(question, answer)
+                cur = conn.execute(
+                    """
+                    INSERT INTO conversations (title, created_at, updated_at, thumbnail)
+                    VALUES (?, ?, ?, ?);
+                    """,
+                    (conv_title, now_str, now_str, thumbnail),
+                )
+                target_conv_id = int(cur.lastrowid)
+            else:
+                target_conv_id = conv_id
+                conn.execute(
+                    "UPDATE conversations SET updated_at = ? WHERE id = ?;",
+                    (now_str, target_conv_id),
+                )
+
+            # Insert user question
+            conn.execute(
+                """
+                INSERT INTO messages (conversation_id, role, text, created_at, has_image)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (target_conv_id, "user", question, now_str, 1 if has_image else 0),
+            )
+
+            # Insert model answer
+            conn.execute(
+                """
+                INSERT INTO messages (conversation_id, role, text, created_at, has_image)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (target_conv_id, "model", answer, now_str, 0),
+            )
+
+            return target_conv_id
 
     def create_conversation(self, title: str, thumbnail: Optional[bytes] = None) -> int:
         """Create a new conversation record. Returns new conversation ID."""

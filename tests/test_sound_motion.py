@@ -8,7 +8,7 @@ from ui.peachy_popup import should_animate
 from ui.sound import SoundManager, get_sound_manager
 
 
-def test_sound_manager_mute_and_volume():
+def test_sound_manager_mute_and_volume(qapp):
     """Verify SoundManager volume scaling, mute state, and bidirectional settings sync."""
     settings = Settings(sound_enabled=True, sound_volume=40)
     mgr = SoundManager(settings=settings)
@@ -36,7 +36,7 @@ def test_sound_manager_mute_and_volume():
     assert mgr.play("open") is False
 
 
-def test_sound_manager_rate_limiting():
+def test_sound_manager_rate_limiting(qapp):
     """Verify SoundManager rate limits calls within 150 ms window."""
     settings = Settings(sound_enabled=True, sound_volume=50)
     mgr = SoundManager(settings=settings)
@@ -60,3 +60,18 @@ def test_motion_reduction_check():
     os_anim = get_client_area_animation_enabled()
     assert should_animate(s_normal) == os_anim
 
+
+
+def test_sound_manager_rereads_updated_settings(qapp):
+    """get_sound_manager(new_settings) re-reads sound_enabled and sound_volume live."""
+    s1 = Settings(sound_enabled=True, sound_volume=25)
+    mgr1 = get_sound_manager(s1)
+    assert mgr1.get_volume() == 25
+    assert not mgr1.is_muted
+
+    # Pass updated settings
+    s2 = Settings(sound_enabled=False, sound_volume=85)
+    mgr2 = get_sound_manager(s2)
+    assert mgr2 is mgr1
+    assert mgr2.get_volume() == 85
+    assert mgr2.is_muted is True
