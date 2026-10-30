@@ -736,3 +736,222 @@ def test_normal_production_database_path(monkeypatch: pytest.MonkeyPatch, tmp_pa
     conv = store.get_conversation(cid)
     assert conv is not None
     assert conv["title"] == "Production DB Test"
+
+
+# ---------------------------------------------------------------------------
+# 12. PCH-101 Hardening: Strict recovery, backup integrity, concurrency, fallback
+# ---------------------------------------------------------------------------
+def test_recovery_fails_on_wal_deletion_failure(tmp_path: Path):
+    """Strict recovery: fails and returns False if the -wal companion file cannot be unlinked."""
+    import os
+    db_file = tmp_path / "corrupt_wal_fail.db"
+    wal_file = tmp_path / "corrupt_wal_fail.db-wal"
+    db_file.write_bytes(b"CORRUPT DB")
+    wal_file.write_bytes(b"WAL DATA")
+
+    store = HistoryStore.__new__(HistoryStore)
+    store.db_path = db_file
+
+    orig_unlink = os.unlink
+
+    def mock_unlink(path, *args, **kwargs):
+        if str(path).endswith("-wal"):
+            raise OSError("Locked: cannot unlink WAL")
+        return orig_unlink(path, *args, **kwargs)
+
+    with patch("os.unlink", side_effect=mock_unlink):
+        success = store._recover_corrupt_db()
+        assert success is False
+
+
+def test_recovery_fails_on_shm_deletion_failure(tmp_path: Path):
+    """Strict recovery: fails and returns False if the -shm companion file cannot be unlinked."""
+    import os
+    db_file = tmp_path / "corrupt_shm_fail.db"
+    shm_file = tmp_path / "corrupt_shm_fail.db-shm"
+    db_file.write_bytes(b"CORRUPT DB")
+    shm_file.write_bytes(b"SHM DATA")
+
+    store = HistoryStore.__new__(HistoryStore)
+    store.db_path = db_file
+
+    orig_unlink = os.unlink
+
+    def mock_unlink(path, *args, **kwargs):
+        if str(path).endswith("-shm"):
+            raise OSError("Locked: cannot unlink SHM")
+        return orig_unlink(path, *args, **kwargs)
+
+    with patch("os.unlink", side_effect=mock_unlink):
+        success = store._recover_corrupt_db()
+        assert success is False
+
+
+def test_recovery_fails_on_main_db_deletion_failure(tmp_path: Path):
+    """Strict recovery: fails and returns False if the main database file cannot be unlinked."""
+    import os
+    db_file = tmp_path / "corrupt_main_fail.db"
+    db_file.write_bytes(b"CORRUPT DB")
+
+    store = HistoryStore.__new__(HistoryStore)
+    store.db_path = db_file
+
+    orig_unlink = os.unlink
+
+    def mock_unlink(path, *args, **kwargs):
+        if str(path) == str(db_file):
+            raise OSError("Locked: cannot unlink main database")
+        return orig_unlink(path, *args, **kwargs)
+
+    with patch("os.unlink", side_effect=mock_unlink):
+        success = store._recover_corrupt_db()
+        assert success is False
+
+
+def test_concurrent_recovery_protection(tmp_path: Path):
+    """Concurrent recovery attempts by multiple threads are safely serialized by _RECOVERY_LOCK."""
+    import threading
+
+    db_file = tmp_path / "concurrent_corrupt.db"
+    db_file.write_bytes(b"NOT A VALID SQLITE DATABASE -- FORCE CORRUPTION ERROR")
+
+    errors: list[Exception] = []
+    stores: list[HistoryStore] = []
+
+    def worker():
+        try:
+            s = HistoryStore(db_path=db_file)
+            stores.append(s)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Concurrent recovery threw unexpected errors: {errors}"
+    assert len(stores) == 6
+
+    # All stores should have resolved to the original database path without activating fallback
+    for s in stores:
+        assert s.db_path == db_file
+        assert not s.is_fallback
+
+    # The recovered database should be healthy and support writes/reads
+    primary_store = stores[0]
+    cid = primary_store.create_conversation("Concurrent Recovery Post-Test")
+    assert cid > 0
+    msgs = primary_store.get_messages(cid)
+    assert msgs == []
+
+
+def test_backup_preserves_all_wal_and_shm_artifacts(tmp_path: Path):
+    """SQLite backup integrity: recovery preserves history.db, -wal, and -shm files to .bak."""
+    db_file = tmp_path / "corrupt_wal_shm.db"
+    wal_file = tmp_path / "corrupt_wal_shm.db-wal"
+    shm_file = tmp_path / "corrupt_wal_shm.db-shm"
+
+    db_bytes = b"CORRUPT MAIN DATABASE BYTES"
+    wal_bytes = b"CRITICAL UNCHECKPOINTED WAL TRANSACTIONS 12345"
+    shm_bytes = b"SHARED MEMORY INDEX 67890"
+
+    db_file.write_bytes(db_bytes)
+    wal_file.write_bytes(wal_bytes)
+    shm_file.write_bytes(shm_bytes)
+
+    store = HistoryStore(db_path=db_file)
+
+    # All 3 .bak companion files must exist with exact byte integrity
+    db_bak = tmp_path / "corrupt_wal_shm.db.bak"
+    wal_bak = tmp_path / "corrupt_wal_shm.db-wal.bak"
+    shm_bak = tmp_path / "corrupt_wal_shm.db-shm.bak"
+
+    assert db_bak.exists()
+    assert db_bak.read_bytes() == db_bytes
+
+    assert wal_bak.exists()
+    assert wal_bak.read_bytes() == wal_bytes
+
+    assert shm_bak.exists()
+    assert shm_bak.read_bytes() == shm_bytes
+
+    # The store successfully restored the database at original path
+    assert store.db_path == db_file
+    assert not store.is_fallback
+
+
+def test_recovery_with_existing_wal_data(tmp_path: Path):
+    """Corrupt DB with active WAL data backs up both, recreates clean schema, and supports CRUD."""
+    db_file = tmp_path / "active_wal_store.db"
+    wal_file = tmp_path / "active_wal_store.db-wal"
+
+    db_file.write_bytes(b"CORRUPTED HEADER")
+    wal_file.write_bytes(b"WAL DATA BEFORE CRASH")
+
+    store = HistoryStore(db_path=db_file)
+
+    # Verify backup preserved WAL
+    wal_bak = tmp_path / "active_wal_store.db-wal.bak"
+    assert wal_bak.exists()
+    assert wal_bak.read_bytes() == b"WAL DATA BEFORE CRASH"
+
+    # Verify store can execute normal operations
+    cid = store.create_conversation("Fresh After WAL Recovery")
+    assert cid > 0
+    store.add_message(cid, "user", "Message after WAL recovery")
+    store.add_message(cid, "assistant", "Database restored cleanly.")
+
+    convs = store.list_conversations()
+    assert len(convs) == 1
+    assert convs[0]["title"] == "Fresh After WAL Recovery"
+
+    messages = store.get_messages(cid)
+    assert len(messages) == 2
+    assert messages[0]["text"] == "Message after WAL recovery"
+    assert messages[1]["text"] == "Database restored cleanly."
+
+
+def test_temporary_fallback_notification_and_flag(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    """When permanent path cannot be recovered, HistoryStore enters non-silent fallback mode."""
+    import logging
+
+    db_file = tmp_path / "unusable.db"
+    db_file.write_bytes(b"CORRUPT DATA")
+
+    notifications: list[str] = []
+
+    def on_fallback_callback(reason: str) -> None:
+        notifications.append(reason)
+
+    # Force recovery to fail (e.g. disk write-protection or locked corrupt file)
+    with patch.object(HistoryStore, "_recover_corrupt_db", return_value=False):
+        with caplog.at_level(logging.ERROR):
+            store = HistoryStore(db_path=db_file, on_fallback=on_fallback_callback)
+
+    # 1. Store flags it is in fallback mode
+    assert store.is_fallback is True
+    assert store.fallback_reason is not None
+    assert "Recovery failed" in store.fallback_reason
+
+    # 2. Callback was invoked
+    assert len(notifications) == 1
+    assert "Recovery failed" in notifications[0]
+
+    # 3. Store path redirected to temp fallback, original path preserved
+    assert store.original_db_path == db_file
+    assert store.db_path != db_file
+    assert "peachy_history" in str(store.db_path)
+
+    # 4. Original file is intact (not deleted/corrupted further)
+    assert db_file.exists()
+    assert db_file.read_bytes() == b"CORRUPT DATA"
+
+    # 5. Fallback DB is operational for the session
+    cid = store.create_conversation("Fallback Session Conv")
+    assert cid > 0
+
+    # 6. Prominent log message emitted
+    assert any("STORAGE DEGRADED" in record.message for record in caplog.records)
+    assert any("Chat history in this session will NOT persist" in record.message for record in caplog.records)
