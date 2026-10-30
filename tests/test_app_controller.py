@@ -351,3 +351,55 @@ def test_hotkey_while_in_error_state_auto_resets_and_activates(controller_setup,
     controller.on_overlay_cancelled()
     assert state_mgr.state == AppState.IDLE
 
+
+
+def test_app_controller_sound_manager_startup_and_save_exchange(tmp_path, qtbot):
+    """AppController initializes sound_manager with settings and delegates _save_to_history to save_exchange."""
+    from unittest.mock import MagicMock
+    from config.settings import Settings
+    from core.state_manager import StateManager
+    from core.hotkey_manager import HotkeyManager
+    from capture.selection_overlay import OverlayManager
+    from ui.tray_manager import TrayManager
+    from ui.peachy_popup import PeachyPopup
+    from history.store import HistoryStore
+    from core.app_controller import AppController
+
+    settings = Settings(sound_enabled=True, sound_volume=65, save_history=True)
+    store = HistoryStore(db_path=tmp_path / "ctrl_test.db")
+    state_mgr = StateManager()
+    hotkey_mgr = HotkeyManager()
+    tray_mgr = TrayManager()
+    overlay_mgr = OverlayManager()
+    popup = PeachyPopup()
+
+    controller = AppController(
+        state_manager=state_mgr,
+        hotkey_manager=hotkey_mgr,
+        tray_manager=tray_mgr,
+        overlay_manager=overlay_mgr,
+        popup=popup,
+        settings=settings,
+        history_store=store,
+    )
+    qtbot.addWidget(popup)
+
+    # 1. Verify sound_manager initialized at startup
+    assert hasattr(controller, "sound_manager")
+    assert controller.sound_manager is not None
+    assert controller.sound_manager.get_volume() == 65
+
+    # 2. Verify _save_to_history delegates to HistoryStore.save_exchange
+    store.save_exchange = MagicMock(return_value=42)
+    controller._first_question = "Test First Question"
+    controller._save_to_history("Test Answer")
+
+    # Wait for background worker to execute
+    qtbot.waitUntil(lambda: store.save_exchange.called, timeout=2000)
+    store.save_exchange.assert_called_once()
+    call_kwargs = store.save_exchange.call_args.kwargs
+    assert call_kwargs["question"] == "Test First Question"
+    assert call_kwargs["answer"] == "Test Answer"
+
+    popup.close()
+    controller.shutdown()

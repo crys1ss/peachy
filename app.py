@@ -37,6 +37,7 @@ from ui.history_window import HistoryWindow
 from ui.settings_window import SettingsWindow
 from ui.tray_manager import TrayManager
 from history.store import HistoryStore
+from ui.sound import get_sound_manager
 
 SINGLE_INSTANCE_SERVER_NAME = "Peachy_Single_Instance_IPC_Server"
 
@@ -166,6 +167,7 @@ class PeachyApp(QObject):
 
         # 2. Settings
         self.settings = load_settings()
+        self.sound_manager = get_sound_manager(self.settings)
 
         # 3. System Tray
         self.tray_manager = TrayManager(self)
@@ -273,6 +275,7 @@ class PeachyApp(QObject):
 
             self.settings = new_settings
             self.controller.settings = new_settings
+            get_sound_manager(new_settings)
             if hasattr(self, "history_window") and self.history_window:
                 self.history_window.settings = new_settings
                 self.history_window.apply_theme(new_settings.theme)

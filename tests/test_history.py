@@ -955,3 +955,88 @@ def test_temporary_fallback_notification_and_flag(tmp_path: Path, caplog: pytest
     # 6. Prominent log message emitted
     assert any("STORAGE DEGRADED" in record.message for record in caplog.records)
     assert any("Chat history in this session will NOT persist" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 13. PCH-102: save_exchange transaction atomicity & CRUD
+# ---------------------------------------------------------------------------
+def test_history_store_save_exchange_new_conversation(tmp_path: Path):
+    """save_exchange with conv_id=None creates new conversation and inserts both messages in one transaction."""
+    db_file = tmp_path / "save_exchange_new.db"
+    store = HistoryStore(db_path=db_file)
+
+    cid = store.save_exchange(
+        conv_id=None,
+        question="What is this UI widget?",
+        answer="This is a Qt QPushButton.",
+        has_image=True,
+        title="Custom Widget Explanation",
+        thumbnail=b"FAKE_JPEG_THUMBNAIL_BYTES",
+    )
+    assert cid > 0
+
+    conv = store.get_conversation(cid)
+    assert conv is not None
+    assert conv["title"] == "Custom Widget Explanation"
+    assert conv["thumbnail"] == b"FAKE_JPEG_THUMBNAIL_BYTES"
+
+    msgs = store.get_messages(cid)
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "user"
+    assert msgs[0]["text"] == "What is this UI widget?"
+    assert msgs[0]["has_image"] == 1
+    assert msgs[1]["role"] == "model"
+    assert msgs[1]["text"] == "This is a Qt QPushButton."
+    assert msgs[1]["has_image"] == 0
+
+
+def test_history_store_save_exchange_append_turn(tmp_path: Path):
+    """save_exchange with existing conv_id appends user and model messages and updates timestamp."""
+    db_file = tmp_path / "save_exchange_append.db"
+    store = HistoryStore(db_path=db_file)
+
+    cid1 = store.save_exchange(
+        conv_id=None,
+        question="Turn 1 Question",
+        answer="Turn 1 Answer",
+        has_image=False,
+    )
+    conv_before = store.get_conversation(cid1)
+    assert conv_before is not None
+    ts_before = conv_before["updated_at"]
+
+    import time
+    time.sleep(0.05)
+
+    cid2 = store.save_exchange(
+        conv_id=cid1,
+        question="Turn 2 Follow-up Question",
+        answer="Turn 2 Follow-up Answer",
+        has_image=False,
+    )
+    assert cid2 == cid1
+
+    conv_after = store.get_conversation(cid1)
+    assert conv_after is not None
+    assert conv_after["updated_at"] >= ts_before
+
+    msgs = store.get_messages(cid1)
+    assert len(msgs) == 4
+    assert msgs[2]["text"] == "Turn 2 Follow-up Question"
+    assert msgs[3]["text"] == "Turn 2 Follow-up Answer"
+
+
+def test_history_store_save_exchange_auto_title_fallback(tmp_path: Path):
+    """save_exchange automatically generates title from question and answer when title is omitted."""
+    db_file = tmp_path / "save_exchange_title.db"
+    store = HistoryStore(db_path=db_file)
+
+    cid = store.save_exchange(
+        conv_id=None,
+        question="How does SQLite WAL mode work?",
+        answer="Write-Ahead Logging records changes before committing.",
+        has_image=False,
+    )
+    conv = store.get_conversation(cid)
+    assert conv is not None
+    assert conv["title"] == "How does SQLite WAL mode work?"
