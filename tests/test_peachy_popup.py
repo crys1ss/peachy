@@ -261,3 +261,21 @@ def test_ocr_header_title_display(qtbot):
     ocr_q = "Extract all visible text in this image verbatim. Do not add preamble, explanations, or commentary. Output raw text only."
     popup.show_answer("Extracted raw text from image", question=ocr_q)
     assert popup.answer_view.header_title.text() == "Extracted Text (Copied to Clipboard)"
+
+
+def test_apply_theme_does_not_steal_focus_or_raise(qtbot):
+    """Regression test (Bug Fix 7): apply_theme must NOT call raise_(), while expand_from_pill must."""
+    from unittest.mock import MagicMock
+    popup = PeachyPopup()
+    qtbot.addWidget(popup)
+    popup.raise_ = MagicMock()
+
+    # 1. apply_theme should update theme and re-style without calling raise_()
+    popup.apply_theme(theme_mode="light", accent="rose", font_scale=110)
+    assert popup.theme.name == "light"
+    assert popup.theme.accent == "#A82468"
+    popup.raise_.assert_not_called()
+
+    # 2. expand_from_pill should restore and call raise_()
+    popup.expand_from_pill()
+    popup.raise_.assert_called_once()

@@ -214,10 +214,18 @@ class SettingsWindow(QDialog):
         self.setFont(theme.get_app_font(13))
         self.setStyleSheet(self._generate_stylesheet())
 
-    def apply_theme(self, theme_mode: Optional[str] = None) -> None:
-        """Apply a new theme mode to the settings window live."""
+    def apply_theme(
+        self,
+        theme_mode: Optional[str] = None,
+        accent: Optional[str] = None,
+        font_scale: Optional[float | int] = None,
+    ) -> None:
+        """Apply a new theme mode, accent, and font scale to the settings window live."""
         mode = theme_mode or getattr(self.settings, "theme", "midnight")
-        self.theme_tokens = theme.get_theme(theme_mode=mode)
+        acc = accent or getattr(self.settings, "accent", "peach")
+        if font_scale is not None:
+            theme.set_font_scale(font_scale)
+        self.theme_tokens = theme.get_theme(theme_mode=mode, accent=acc)
         self.setStyleSheet(self._generate_stylesheet())
         if hasattr(self, "title_label") and self.title_label:
             self.title_label.setStyleSheet(f"color: {self.theme_tokens.accent};")
