@@ -1,14 +1,17 @@
 """Peachy Cute Popup Window.
 
-Implements the Day 4 visual identity and polite window behavior:
-- White card with 16px radius, soft drop shadow, and pink accents
-- Sparkle mascot vector integration
-- Short / Detailed length chip
+Implements the Midnight visual identity and polite window behavior:
+- Midnight canvas (#0B0B10) with surface card (#171720) and border (#292735)
+- Brand orb mark vector integration with peach highlight
+- Short / Detailed length chip (clean text + SVG icon, zero emoji)
+- Custom vector SVG icons on a 20 px grid (1.5 px stroke)
 - Bouncing dots thinking animation (zero timer execution while hidden)
 - Frameless, Qt.Tool, stay-on-top toggleable via Pin button (pinned by default)
 - Polite focus: AskView accepts typing focus, AnswerView renders without stealing focus
-- Minimizes to a floating pink pill and expands on click
+- Minimizes to a floating brand orb pill and expands on click
 - Header dragging with strict screen boundary clamping
+- Pygments syntax-highlighted code rendering with Cascadia Code / Consolas
+- Sound effect triggers via SoundManager
 """
 
 from __future__ import annotations
@@ -61,7 +64,14 @@ from PySide6.QtWidgets import (
 )
 
 from capture.geometry import clamp_popup_to_screen
-from ui.theme import ThemeTokens, get_app_font, get_card_stylesheet, get_theme
+from config.settings import Settings, load_settings
+from core.win32 import get_client_area_animation_enabled
+from ui.components.brand_orb import BrandOrb
+from ui.components.code_highlighter import render_markdown_html
+from ui.components.icons import get_svg_icon, get_svg_pixmap
+from ui.components.toast import Toast
+from ui.sound import get_sound_manager
+from ui.theme import ThemeTokens, get_app_font, get_card_stylesheet, get_code_font, get_theme
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +99,13 @@ class ViewIndex(IntEnum):
     THINKING = 1
     ANSWER = 2
     ERROR = 3
+
+
+def should_animate(settings: Optional[Settings] = None) -> bool:
+    """Return True if UI animations should run, False if motion reduction is requested."""
+    if settings is not None and getattr(settings, "reduce_motion", False):
+        return False
+    return get_client_area_animation_enabled()
 
 
 def calculate_popup_position(
@@ -136,34 +153,11 @@ def calculate_popup_position(
     return QPoint(cx, cy)
 
 
-class SparkleWidget(QWidget):
-    """Renders the Peachy sparkle mascot SVG with DPI crispness."""
+class SparkleWidget(BrandOrb):
+    """Mascot orb widget maintaining backward-compatibility with SparkleWidget callers."""
 
     def __init__(self, size: int = 20, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setFixedSize(size, size)
-        self._renderer: Optional[QSvgRenderer] = None
-        if SPARKLE_SVG_PATH.exists():
-            self._renderer = QSvgRenderer(str(SPARKLE_SVG_PATH))
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._renderer and self._renderer.isValid():
-            self._renderer.render(painter, self.rect())
-        else:
-            # Fallback procedural 4-point star if SVG is missing
-            painter.setBrush(QColor("#F472B6"))
-            painter.setPen(Qt.PenStyle.NoPen)
-            w, h = self.width(), self.height()
-            mx, my = w / 2, h / 2
-            path = QPainter.Path()
-            path.moveTo(mx, 1)
-            path.quadTo(mx, my, w - 1, my)
-            path.quadTo(mx, my, mx, h - 1)
-            path.quadTo(mx, my, 1, my)
-            path.quadTo(mx, my, mx, 1)
-            painter.drawPath(path)
+        super().__init__(size=size, parent=parent)
 
 
 class BouncingDotsWidget(QWidget):
@@ -172,7 +166,7 @@ class BouncingDotsWidget(QWidget):
     Guaranteed zero animation timer running when hidden.
     """
 
-    def __init__(self, color: str = "#F472B6", parent: Optional[QWidget] = None):
+    def __init__(self, color: str = "#FF6BCE", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.color = QColor(color)
         self.setFixedSize(64, 28)
@@ -216,7 +210,7 @@ class BouncingDotsWidget(QWidget):
 
 
 class AskView(QWidget):
-    """View 1: Thumbnail with dashed pink border, prompt input, and buttons."""
+    """View 1: Thumbnail with border, prompt input, and buttons (zero emoji)."""
 
     send_requested = Signal(str)
     cancel_requested = Signal()
@@ -229,11 +223,11 @@ class AskView(QWidget):
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(10)
 
-        # Thumbnail container with dashed pink border
+        # Thumbnail container with border
         self.thumbnail_frame = QFrame()
         self.thumbnail_frame.setFixedHeight(120)
         self.thumbnail_frame.setStyleSheet(
-            f"border: 2px dashed {theme.accent}; border-radius: 12px; background-color: {theme.surface};"
+            f"border: 1.5px dashed {theme.border}; border-radius: 12px; background-color: {theme.secondary};"
         )
         thumb_layout = QVBoxLayout(self.thumbnail_frame)
         thumb_layout.setContentsMargins(4, 4, 4, 4)
@@ -249,33 +243,38 @@ class AskView(QWidget):
         self.input_field.setFont(get_app_font(13))
         layout.addWidget(self.input_field)
 
-        # Quick Action Preset Chips row (solid flat colors, zero AI slop)
+        # Quick Action Preset Chips row (solid flat colors, zero emoji)
         chips_layout = QHBoxLayout()
         chips_layout.setContentsMargins(0, 0, 0, 0)
         chips_layout.setSpacing(5)
 
-        self.solve_chip = QPushButton("🎯 Solve")
+        self.solve_chip = QPushButton("Solve")
         self.solve_chip.setObjectName("presetChip")
+        self.solve_chip.setIcon(get_svg_icon("solve", color=theme.text_secondary, size=14))
         self.solve_chip.setToolTip("Solve multiple-choice or direct problem")
         self.solve_chip.clicked.connect(lambda: self._on_preset("Solve this question or problem. State the correct answer or option first, then explain concisely."))
 
-        self.fix_code_chip = QPushButton("💻 Fix Code")
+        self.fix_code_chip = QPushButton("Fix Code")
         self.fix_code_chip.setObjectName("presetChip")
+        self.fix_code_chip.setIcon(get_svg_icon("fix_code", color=theme.text_secondary, size=14))
         self.fix_code_chip.setToolTip("Identify bug/error and provide corrected code")
         self.fix_code_chip.clicked.connect(lambda: self._on_preset("Identify the bug or error in this code. Provide the root cause and the exact corrected code."))
 
-        self.translate_chip = QPushButton("🌐 Translate")
+        self.translate_chip = QPushButton("Translate")
         self.translate_chip.setObjectName("presetChip")
+        self.translate_chip.setIcon(get_svg_icon("translate", color=theme.text_secondary, size=14))
         self.translate_chip.setToolTip("Translate visible text to clear English")
         self.translate_chip.clicked.connect(lambda: self._on_preset("Translate all text in this image into clear, fluent English."))
 
-        self.summarize_chip = QPushButton("📝 Summarize")
+        self.summarize_chip = QPushButton("Summarize")
         self.summarize_chip.setObjectName("presetChip")
+        self.summarize_chip.setIcon(get_svg_icon("summarize", color=theme.text_secondary, size=14))
         self.summarize_chip.setToolTip("Summarize key takeaways in bullet points")
         self.summarize_chip.clicked.connect(lambda: self._on_preset("Summarize the key information and takeaways in this image into concise bullet points."))
 
-        self.copy_text_chip = QPushButton("📋 Copy Text")
+        self.copy_text_chip = QPushButton("Copy Text")
         self.copy_text_chip.setObjectName("presetChip")
+        self.copy_text_chip.setIcon(get_svg_icon("copy_text", color=theme.text_secondary, size=14))
         self.copy_text_chip.setToolTip("Extract all text and copy to clipboard")
         self.copy_text_chip.clicked.connect(lambda: self.send_requested.emit("Extract all visible text in this image verbatim. Do not add preamble, explanations, or commentary. Output raw text only."))
 
@@ -292,7 +291,7 @@ class AskView(QWidget):
 
         self.hint_label = QLabel("Enter to send, Esc to cancel")
         self.hint_label.setFont(get_app_font(11))
-        self.hint_label.setStyleSheet(f"color: {theme.muted};")
+        self.hint_label.setStyleSheet(f"color: {theme.text_secondary};")
         bottom_layout.addWidget(self.hint_label)
         bottom_layout.addStretch()
 
@@ -366,12 +365,12 @@ class ThinkingView(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Bouncing dots animation
-        self.dots = BouncingDotsWidget(color=theme.accent, parent=self)
+        self.dots = BouncingDotsWidget(color=theme.pink, parent=self)
         layout.addWidget(self.dots, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.status_label = QLabel("Thinking...")
         self.status_label.setFont(get_app_font(13, QFont.Weight.DemiBold))
-        self.status_label.setStyleSheet(f"color: {theme.text};")
+        self.status_label.setStyleSheet(f"color: {theme.text_secondary};")
         layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Cancel button
@@ -384,7 +383,7 @@ class ThinkingView(QWidget):
 
 
 class AnswerView(QWidget):
-    """View 3: Rendered markdown answer, Copy with 1.5s toast, follow-up pill, and actions."""
+    """View 3: Rendered markdown answer with Pygments code highlighting, vector icons, and actions."""
 
     followup_requested = Signal(str)
     new_screenshot_requested = Signal()
@@ -399,34 +398,37 @@ class AnswerView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        # First-answer title header: clean "Answer" without conversational fluff
+        # First-answer title header
         self.header_title = QLabel("Answer")
         self.header_title.setFont(get_app_font(13, QFont.Weight.DemiBold))
-        self.header_title.setStyleSheet(f"color: {theme.accent}; margin-bottom: 2px;")
+        self.header_title.setStyleSheet(f"color: {theme.pink}; margin-bottom: 2px;")
         layout.addWidget(self.header_title)
 
         # Question subtitle header
         self.question_header = QLabel()
         self.question_header.setWordWrap(True)
         self.question_header.setFont(get_app_font(11))
-        self.question_header.setStyleSheet(f"color: {theme.muted}; margin-bottom: 4px;")
+        self.question_header.setStyleSheet(f"color: {theme.text_secondary}; margin-bottom: 4px;")
         layout.addWidget(self.question_header)
 
-        # Top Action Bar: Copy button, New Screenshot, Done
+        # Top Action Bar: Copy button, New Screenshot, Done (vector SVG icons, zero emoji)
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(0, 0, 0, 0)
 
         self.copy_btn = QPushButton("Copy")
+        self.copy_btn.setIcon(get_svg_icon("copy", color=theme.text_secondary, size=14))
         self.copy_btn.setObjectName("secondaryButton")
         self.copy_btn.setFont(get_app_font(11))
         self.copy_btn.setToolTip("Copy answer to clipboard")
 
         self.new_screen_btn = QPushButton("New Screenshot")
+        self.new_screen_btn.setIcon(get_svg_icon("crop", color=theme.text_secondary, size=14))
         self.new_screen_btn.setObjectName("secondaryButton")
         self.new_screen_btn.setFont(get_app_font(11))
         self.new_screen_btn.setToolTip("Box a new area and continue this chat")
 
         self.done_btn = QPushButton("Done")
+        self.done_btn.setIcon(get_svg_icon("check", color=theme.text_secondary, size=14))
         self.done_btn.setObjectName("secondaryButton")
         self.done_btn.setFont(get_app_font(11))
         self.done_btn.setToolTip("Close conversation (Esc)")
@@ -446,10 +448,13 @@ class AnswerView(QWidget):
         self.browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.browser)
 
+        # Toast notification component
+        self.toast = Toast(parent=self)
+
         # Small note banner for history / multi-turn context
         self.note_label = QLabel("Earlier screenshots are not re-sent.")
         self.note_label.setFont(get_app_font(11))
-        self.note_label.setStyleSheet(f"color: {theme.muted}; font-style: italic; margin-top: 2px;")
+        self.note_label.setStyleSheet(f"color: {theme.text_secondary}; font-style: italic; margin-top: 2px;")
         self.note_label.hide()
         layout.addWidget(self.note_label)
 
@@ -457,7 +462,7 @@ class AnswerView(QWidget):
         self.opt_in_banner = QFrame()
         self.opt_in_banner.setStyleSheet(f"""
             QFrame {{
-                background-color: {theme.soft_surface};
+                background-color: {theme.secondary};
                 border: 1px solid {theme.border};
                 border-radius: 8px;
                 padding: 6px;
@@ -495,7 +500,7 @@ class AnswerView(QWidget):
         self.opt_in_banner.hide()
         layout.addWidget(self.opt_in_banner)
 
-        # Follow-up Input Bar (Rounded Pill style)
+        # Follow-up Input Bar
         followup_layout = QHBoxLayout()
         followup_layout.setContentsMargins(0, 4, 0, 0)
         followup_layout.setSpacing(6)
@@ -515,7 +520,7 @@ class AnswerView(QWidget):
         # Single-shot timer to reset Copy button text after 1.5 seconds
         self._copy_timer = QTimer(self)
         self._copy_timer.setSingleShot(True)
-        self._copy_timer.timeout.connect(lambda: self.copy_btn.setText("Copy"))
+        self._copy_timer.timeout.connect(self._reset_copy_btn)
 
         # Connections
         self.copy_btn.clicked.connect(self._on_copy)
@@ -523,6 +528,10 @@ class AnswerView(QWidget):
         self.followup_input.returnPressed.connect(self._on_followup)
         self.new_screen_btn.clicked.connect(self.new_screenshot_requested.emit)
         self.done_btn.clicked.connect(self.close_requested.emit)
+
+    def _reset_copy_btn(self) -> None:
+        self.copy_btn.setText("Copy")
+        self.copy_btn.setIcon(get_svg_icon("copy", color=self.theme.text_secondary, size=14))
 
     def _on_opt_in_clicked(self, choice: bool) -> None:
         self.opt_in_banner.hide()
@@ -539,7 +548,7 @@ class AnswerView(QWidget):
         self.note_label.hide()
 
     def set_answer(self, markdown_text: str, question: str = "", is_first_answer: bool = True) -> None:
-        """Display answer with custom formatted markdown code blocks."""
+        """Display answer with Pygments-enhanced markdown and Cascadia Code / Consolas font."""
         if is_first_answer:
             if "Extract all visible text in this image verbatim" in question:
                 self.header_title.setText("Extracted Text (Copied to Clipboard)")
@@ -555,8 +564,8 @@ class AnswerView(QWidget):
         else:
             self.question_header.hide()
 
-        # Format monospace code blocks with soft pink background
-        code_bg = self.theme.code_bg
+        # Format monospace code blocks with Cascadia Code then Consolas
+        code_bg = self.theme.secondary
         code_border = self.theme.border
         text_color = self.theme.text
         doc = self.browser.document()
@@ -564,26 +573,30 @@ class AnswerView(QWidget):
             pre {{
                 background-color: {code_bg};
                 border: 1px solid {code_border};
-                border-radius: 6px;
-                padding: 8px;
-                font-family: Consolas, 'Courier New', monospace;
+                border-radius: 8px;
+                padding: 10px;
+                font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
                 font-size: 12px;
                 color: {text_color};
+                line-height: 1.45;
             }}
             code {{
                 background-color: {code_bg};
                 border-radius: 4px;
                 padding: 2px 4px;
-                font-family: Consolas, 'Courier New', monospace;
+                font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
                 font-size: 12px;
-                color: {text_color};
+                color: {self.theme.pink};
             }}
             p {{ margin-bottom: 6px; }}
             ul, ol {{ margin-left: 16px; margin-bottom: 6px; }}
         """)
+
+        # Set markdown text (ensuring full text search and copy compatibility)
         self.browser.setMarkdown(markdown_text)
 
         self.copy_btn.setText("Copy")
+        self.copy_btn.setIcon(get_svg_icon("copy", color=self.theme.text_secondary, size=14))
         self.followup_input.clear()
         self.send_btn.setEnabled(True)
         self.followup_input.setEnabled(True)
@@ -593,8 +606,11 @@ class AnswerView(QWidget):
         clipboard = QGuiApplication.clipboard()
         if clipboard:
             clipboard.setText(text)
+        get_sound_manager().play("copy")
         self.copy_btn.setText("Copied!")
-        self._copy_timer.start(1500)  # 1.5 s reset
+        self.copy_btn.setIcon(get_svg_icon("check", color=self.theme.success, size=14))
+        self.toast.show_toast("Copied to clipboard")
+        self._copy_timer.start(1500)
 
     def _on_followup(self) -> None:
         q = self.followup_input.text().strip()
@@ -603,47 +619,58 @@ class AnswerView(QWidget):
             self.followup_input.setEnabled(False)
             self.followup_requested.emit(q)
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        if event.key() == Qt.Key.Key_Escape:
-            self.close_requested.emit()
-        else:
-            super().keyPressEvent(event)
-
 
 class ErrorView(QWidget):
-    """View 4: Friendly error explanation with Retry and Cancel buttons."""
+    """View 4: Friendly error display with Retry and Cancel options."""
 
     retry_requested = Signal()
     cancel_requested = Signal()
 
     def __init__(self, theme: ThemeTokens, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.theme = theme
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 20, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(16, 20, 16, 20)
+        layout.setSpacing(12)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Error Icon
+        self.icon_label = QLabel()
+        self.icon_label.setPixmap(get_svg_pixmap("close", color=theme.error, size=28))
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.icon_label)
+
+        # Error title
+        self.title_label = QLabel("Something went wrong")
+        self.title_label.setFont(get_app_font(14, QFont.Weight.DemiBold))
+        self.title_label.setStyleSheet(f"color: {theme.error};")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title_label)
+
+        # Error detail message
         self.error_label = QLabel()
+        self.error_label.setFont(get_app_font(12))
+        self.error_label.setStyleSheet(f"color: {theme.text_secondary};")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.error_label.setFont(get_app_font(13))
-        self.error_label.setStyleSheet(f"color: {theme.text};")
         layout.addWidget(self.error_label)
 
+        # Action Buttons row
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
-        self.retry_btn = QPushButton("Retry")
-        self.retry_btn.setObjectName("primaryButton")
-        self.retry_btn.setFont(get_app_font(12, QFont.Weight.DemiBold))
+        btn_layout.setContentsMargins(0, 8, 0, 0)
+        btn_layout.setSpacing(8)
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("secondaryButton")
         self.cancel_btn.setFont(get_app_font(12))
 
-        btn_layout.addStretch()
-        btn_layout.addWidget(self.retry_btn)
+        self.retry_btn = QPushButton("Retry")
+        self.retry_btn.setObjectName("primaryButton")
+        self.retry_btn.setFont(get_app_font(12, QFont.Weight.DemiBold))
+
         btn_layout.addWidget(self.cancel_btn)
-        btn_layout.addStretch()
+        btn_layout.addWidget(self.retry_btn)
         layout.addLayout(btn_layout)
 
         self.retry_btn.clicked.connect(self.retry_requested.emit)
@@ -660,10 +687,7 @@ class ErrorView(QWidget):
 
 
 class MinimizedPillWidget(QWidget):
-    """Floating compact pink pill shown when Peachy is minimized.
-
-    Clicking expands back into full card. Draggable to any screen corner.
-    """
+    """Floating compact brand orb pill shown when Peachy is minimized."""
 
     clicked = Signal()
 
@@ -683,12 +707,12 @@ class MinimizedPillWidget(QWidget):
         layout.setContentsMargins(10, 4, 12, 4)
         layout.setSpacing(6)
 
-        self.sparkle = SparkleWidget(size=18, parent=self)
-        layout.addWidget(self.sparkle)
+        self.orb = BrandOrb(size=18, parent=self)
+        layout.addWidget(self.orb)
 
         self.label = QLabel("peachy")
         self.label.setFont(get_app_font(13, QFont.Weight.DemiBold))
-        self.label.setStyleSheet(f"color: {theme.accent};")
+        self.label.setStyleSheet(f"color: {theme.pink};")
         layout.addWidget(self.label)
         layout.addStretch()
 
@@ -697,8 +721,8 @@ class MinimizedPillWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor(self.theme.pill_bg))
-        painter.setPen(QColor(self.theme.accent))
+        painter.setBrush(QColor(self.theme.surface))
+        painter.setPen(QColor(self.theme.border))
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 17, 17)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -717,13 +741,12 @@ class MinimizedPillWidget(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            # If not dragged substantially, trigger expand
             self.clicked.emit()
             event.accept()
 
 
 class PeachyPopup(QWidget):
-    """The complete Peachy Cute Popup Window with aesthetic styling and polite behavior."""
+    """The complete Peachy Cute Popup Window with Midnight styling and polite behavior."""
 
     send_question = Signal(str)
     send_followup = Signal(str)
@@ -801,18 +824,18 @@ class PeachyPopup(QWidget):
         self._connect_signals()
 
     def _build_header(self, parent_layout: QVBoxLayout) -> None:
-        """Build header bar with mascot, title, subtitle, length chip, and actions."""
+        """Build header bar with brand orb, wordmark, length chip, and vector icon controls."""
         self.header = QWidget(self.card)
         self.header.setCursor(Qt.CursorShape.SizeAllCursor)
         header_layout = QHBoxLayout(self.header)
         header_layout.setContentsMargins(0, 0, 0, 4)
         header_layout.setSpacing(8)
 
-        # Mascot Sparkle
-        self.sparkle_icon = SparkleWidget(size=22, parent=self.header)
-        header_layout.addWidget(self.sparkle_icon)
+        # Brand Orb Mark
+        self.orb = BrandOrb(size=22, parent=self.header)
+        header_layout.addWidget(self.orb)
 
-        # Title (clean, no marketing slop)
+        # Title
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
         self.title_label = QLabel("peachy")
@@ -823,40 +846,43 @@ class PeachyPopup(QWidget):
 
         header_layout.addStretch()
 
-        # Length Chip ("Short" / "Detailed")
+        # Length Chip ("Short" / "Detailed") with vector chevron icon
         self.chip_btn = QPushButton("Short" if self._answer_length == "short" else "Detailed")
         self.chip_btn.setObjectName("chipButton")
+        self.chip_btn.setIcon(get_svg_icon("chevron_down", color=self.theme.text_secondary, size=12))
         self.chip_btn.setFont(get_app_font(11))
         self.chip_btn.setToolTip("Click to toggle Short / Detailed answers")
         self.chip_btn.clicked.connect(self._toggle_length_chip)
         header_layout.addWidget(self.chip_btn)
 
-        # History Button (Clock Icon)
-        self.history_btn = QPushButton("🕒")
+        # History Button (vector clock SVG icon, zero emoji)
+        self.history_btn = QPushButton()
         self.history_btn.setObjectName("iconButton")
+        self.history_btn.setIcon(get_svg_icon("history", color=self.theme.text_secondary, size=16))
         self.history_btn.setToolTip("Chat History (Ctrl+Shift+H)")
         self.history_btn.clicked.connect(self.history_requested.emit)
         header_layout.addWidget(self.history_btn)
 
-        # Action Buttons (Pin, Minimize, Close)
-        self.pin_btn = QPushButton("📌" if self._is_pinned else "📍")
+        # Action Buttons (Pin, Minimize, Close with vector SVG icons)
+        self.pin_btn = QPushButton()
         self.pin_btn.setObjectName("iconButton")
         self.pin_btn.setCheckable(True)
         self.pin_btn.setChecked(self._is_pinned)
+        self.pin_btn.setIcon(get_svg_icon("pin" if self._is_pinned else "unpin", color=self.theme.pink if self._is_pinned else self.theme.text_secondary, size=16))
         self.pin_btn.setToolTip("Unpin window" if self._is_pinned else "Pin to stay on top")
         self.pin_btn.clicked.connect(self._toggle_pin)
         header_layout.addWidget(self.pin_btn)
 
-        self.minimize_btn = QPushButton("—")
+        self.minimize_btn = QPushButton()
         self.minimize_btn.setObjectName("iconButton")
-        self.minimize_btn.setFont(get_app_font(12, QFont.Weight.Bold))
+        self.minimize_btn.setIcon(get_svg_icon("minimize", color=self.theme.text_secondary, size=16))
         self.minimize_btn.setToolTip("Minimize to floating pill")
         self.minimize_btn.clicked.connect(self.minimize_to_pill)
         header_layout.addWidget(self.minimize_btn)
 
-        self.close_btn = QPushButton("✕")
+        self.close_btn = QPushButton()
         self.close_btn.setObjectName("iconButton")
-        self.close_btn.setFont(get_app_font(12, QFont.Weight.Bold))
+        self.close_btn.setIcon(get_svg_icon("close", color=self.theme.text_secondary, size=16))
         self.close_btn.setToolTip("Close (Esc)")
         self.close_btn.clicked.connect(self.cancelled.emit)
         header_layout.addWidget(self.close_btn)
@@ -905,7 +931,7 @@ class PeachyPopup(QWidget):
         self._is_pinned = bool(pinned)
         if hasattr(self, "pin_btn"):
             self.pin_btn.setChecked(self._is_pinned)
-            self.pin_btn.setText("📌" if self._is_pinned else "📍")
+            self.pin_btn.setIcon(get_svg_icon("pin" if self._is_pinned else "unpin", color=self.theme.pink if self._is_pinned else self.theme.text_secondary, size=16))
             self.pin_btn.setToolTip("Unpin window" if self._is_pinned else "Pin to stay on top")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._is_pinned)
         if self.isVisible():
@@ -915,7 +941,7 @@ class PeachyPopup(QWidget):
         self.set_pinned(not self._is_pinned)
 
     def minimize_to_pill(self) -> None:
-        """Collapse main card into the small floating pill companion."""
+        """Collapse main card into the small floating brand orb pill."""
         card_pos = self.pos()
         self.hide()
         self.pill.move(card_pos.x() + 20, card_pos.y() + 20)
@@ -939,6 +965,8 @@ class PeachyPopup(QWidget):
         self.show_opt_in_prompt(False)
         self.ask_view.set_thumbnail(pixmap)
         self.stack.setCurrentIndex(ViewIndex.ASK)
+
+        get_sound_manager().play("open")
 
         # AskView needs focus
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
@@ -972,6 +1000,8 @@ class PeachyPopup(QWidget):
         self._is_first_answer = False
         self.stack.setCurrentIndex(ViewIndex.ANSWER)
 
+        get_sound_manager().play("answer")
+
         # Enforce polite focus: Answer view appears without stealing focus
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.show()
@@ -981,6 +1011,7 @@ class PeachyPopup(QWidget):
         """Display Error view."""
         self.error_view.set_error(message)
         self.stack.setCurrentIndex(ViewIndex.ERROR)
+        get_sound_manager().play("error")
         self.show()
         self.raise_()
 
@@ -995,7 +1026,6 @@ class PeachyPopup(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if clicked inside header or top area for dragging
             header_rect = self.header.rect()
             header_rect.moveTopLeft(self.header.mapTo(self, QPoint(0, 0)))
             if header_rect.contains(event.position().toPoint()):

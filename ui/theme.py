@@ -1,23 +1,22 @@
 """Design tokens, theme management, and dynamic stylesheet generation for Peachy.
 
-Provides light and dark theme palettes adhering strictly to Peachy's visual identity:
-- Accent: #F472B6 (hover #EC4899)
-- Light: soft surface #FFF1F6, card #FFFFFF, text #1F1F23, muted #6B6B76, border #F9C9DC
-- Dark: surface #1E1A1D, card #2A2328, text #F5F0F3, muted #9E98A0, border #443741
-- Font: Segoe UI Variable, fallback Segoe UI
-- Automatic Windows light/dark mode synchronization
+Provides Midnight, Light, and System themes adhering to Peachy's visual identity:
+- Midnight: background #0B0B10, secondary #111118, surface #171720, elevated #1E1E29, border #292735
+- Accents: pink #FF6BCE, pink soft #F5A4DE, lavender #B9A4FF, peach highlight #FF9E7D
+- Typography: text #F6F3FA, text secondary #A6A1B3, error #FF647C, success #79E2B5
+- Font: Inter Variable with Segoe UI Variable fallback; Cascadia Code / Consolas for code
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-import os
+from pathlib import Path
 import sys
 from typing import Optional
 
-from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
 
 logger = logging.getLogger(__name__)
 
@@ -26,54 +25,123 @@ logger = logging.getLogger(__name__)
 class ThemeTokens:
     """Design system color tokens."""
 
+    name: str
     is_dark: bool
-    accent: str           # #F472B6
-    accent_hover: str     # #EC4899
-    accent_pressed: str   # #DB2777
-    surface: str          # #FFF1F6 (light) or #1E1A1D (dark)
-    card: str             # #FFFFFF (light) or #2A2328 (dark)
-    text: str             # #1F1F23 (light) or #F5F0F3 (dark)
-    muted: str            # #6B6B76 (light) or #9E98A0 (dark)
-    border: str           # #F9C9DC (light) or #443741 (dark)
-    code_bg: str          # #FFF1F6 (light) or #342A32 (dark)
-    pill_bg: str          # Soft pink background for badge/chips
-    shadow_color: str     # Soft drop shadow
+    background: str       # #0B0B10
+    secondary: str        # #111118
+    surface: str          # #171720
+    elevated: str         # #1E1E29
+    border: str           # #292735
+    pink: str             # #FF6BCE
+    pink_soft: str        # #F5A4DE
+    lavender: str         # #B9A4FF
+    text: str             # #F6F3FA
+    text_secondary: str   # #A6A1B3
+    error: str            # #FF647C
+    success: str          # #79E2B5
+    peach: str            # #FF9E7D (brand orb highlight only)
+
+    # Backward compatibility properties for existing modules & tests
+    @property
+    def accent(self) -> str:
+        return self.pink
+
+    @property
+    def accent_hover(self) -> str:
+        return self.pink_soft
+
+    @property
+    def accent_pressed(self) -> str:
+        return "#E055B3" if self.is_dark else "#DB2777"
+
+    @property
+    def card(self) -> str:
+        return self.surface
+
+    @property
+    def muted(self) -> str:
+        return self.text_secondary
+
+    @property
+    def code_bg(self) -> str:
+        return self.secondary
+
+    @property
+    def pill_bg(self) -> str:
+        return self.elevated
+
+    @property
+    def shadow_color(self) -> str:
+        return "rgba(0, 0, 0, 0.65)" if self.is_dark else "rgba(244, 114, 182, 0.18)"
 
     @property
     def soft_surface(self) -> str:
-        """Alias for surface token matching visual identity spec."""
         return self.surface
 
 
-LIGHT_THEME = ThemeTokens(
-    is_dark=False,
-    accent="#F472B6",
-    accent_hover="#EC4899",
-    accent_pressed="#DB2777",
-    surface="#FFF1F6",
-    card="#FFFFFF",
-    text="#1F1F23",
-    muted="#6B6B76",
-    border="#F9C9DC",
-    code_bg="#FFF1F6",
-    pill_bg="#FFE4EE",
-    shadow_color="rgba(244, 114, 182, 0.18)",
+MIDNIGHT_THEME = ThemeTokens(
+    name="midnight",
+    is_dark=True,
+    background="#0B0B10",
+    secondary="#111118",
+    surface="#171720",
+    elevated="#1E1E29",
+    border="#292735",
+    pink="#FF6BCE",
+    pink_soft="#F5A4DE",
+    lavender="#B9A4FF",
+    text="#F6F3FA",
+    text_secondary="#A6A1B3",
+    error="#FF647C",
+    success="#79E2B5",
+    peach="#FF9E7D",
 )
 
-DARK_THEME = ThemeTokens(
-    is_dark=True,
-    accent="#F472B6",
-    accent_hover="#EC4899",
-    accent_pressed="#DB2777",
-    surface="#1E1A1D",
-    card="#2A2328",
-    text="#F5F0F3",
-    muted="#9E98A0",
-    border="#443741",
-    code_bg="#342A32",
-    pill_bg="#3A2C37",
-    shadow_color="rgba(0, 0, 0, 0.45)",
+# Midnight replaces the old plum dark theme
+DARK_THEME = MIDNIGHT_THEME
+
+LIGHT_THEME = ThemeTokens(
+    name="light",
+    is_dark=False,
+    background="#FFF1F6",
+    secondary="#FFE4EE",
+    surface="#FFFFFF",
+    elevated="#FFF8FA",
+    border="#F9C9DC",
+    pink="#FF6BCE",
+    pink_soft="#F5A4DE",
+    lavender="#9065FF",
+    text="#1F1F23",
+    text_secondary="#6B6B76",
+    error="#EF4444",
+    success="#10B981",
+    peach="#FF9E7D",
 )
+
+
+_FONT_INITIALIZED = False
+_INTER_FAMILY = "Inter"
+
+
+def init_application_fonts() -> None:
+    """Register Inter Variable font from resources/fonts/ if available."""
+    global _FONT_INITIALIZED, _INTER_FAMILY
+    if _FONT_INITIALIZED:
+        return
+
+    font_path = Path(__file__).resolve().parent.parent / "resources" / "fonts" / "Inter-Variable.ttf"
+    if font_path.exists():
+        try:
+            font_id = QFontDatabase.addApplicationFont(str(font_path))
+            if font_id >= 0:
+                families = QFontDatabase.applicationFontFamilies(font_id)
+                if families:
+                    _INTER_FAMILY = families[0]
+                    logger.debug("Registered application font: %s", _INTER_FAMILY)
+        except Exception as exc:
+            logger.debug("Could not register Inter-Variable.ttf: %s", exc)
+
+    _FONT_INITIALIZED = True
 
 
 def is_windows_dark_mode() -> bool:
@@ -102,11 +170,27 @@ def is_windows_dark_mode() -> bool:
     return False
 
 
-def get_theme(force_dark: Optional[bool] = None) -> ThemeTokens:
-    """Return active theme tokens based on OS settings or override."""
+def get_theme(
+    force_dark: Optional[bool] = None,
+    theme_mode: Optional[str] = None,
+) -> ThemeTokens:
+    """Return active theme tokens based on settings, OS settings, or override.
+
+    Args:
+        force_dark: Legacy boolean override (True -> Midnight, False -> Light).
+        theme_mode: Explicit theme mode ('midnight', 'light', 'system').
+    """
+    if theme_mode == "midnight":
+        return MIDNIGHT_THEME
+    if theme_mode == "light":
+        return LIGHT_THEME
+    if theme_mode == "system":
+        return MIDNIGHT_THEME if is_windows_dark_mode() else LIGHT_THEME
+
     if force_dark is not None:
-        return DARK_THEME if force_dark else LIGHT_THEME
-    return DARK_THEME if is_windows_dark_mode() else LIGHT_THEME
+        return MIDNIGHT_THEME if force_dark else LIGHT_THEME
+
+    return MIDNIGHT_THEME if is_windows_dark_mode() else LIGHT_THEME
 
 
 def get_app_font(
@@ -114,10 +198,10 @@ def get_app_font(
     weight: Optional[QFont.Weight] = None,
     bold: bool = False,
 ) -> QFont:
-    """Create font prioritizing Segoe UI Variable with Segoe UI fallback."""
+    """Create font prioritizing Inter Variable with Segoe UI Variable fallback."""
+    init_application_fonts()
     font = QFont()
-    # Try Segoe UI Variable first, then Segoe UI, then system sans-serif
-    font.setFamilies(["Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "sans-serif"])
+    font.setFamilies([_INTER_FAMILY, "Inter", "Segoe UI Variable Text", "Segoe UI", "sans-serif"])
     font.setPixelSize(size)
     if weight is not None:
         font.setWeight(weight)
@@ -128,18 +212,27 @@ def get_app_font(
     return font
 
 
+def get_code_font(size: int = 12) -> QFont:
+    """Create monospace font prioritizing Cascadia Code with Consolas fallback."""
+    font = QFont()
+    font.setFamilies(["Cascadia Code", "Consolas", "Courier New", "monospace"])
+    font.setPixelSize(size)
+    font.setWeight(QFont.Weight.Normal)
+    return font
+
+
 def get_card_stylesheet(theme: ThemeTokens) -> str:
-    """Generate stylesheet for main card and components."""
+    """Generate stylesheet for main card and components using Midnight tokens."""
     return f"""
     QFrame#cardContainer {{
-        background-color: {theme.card};
+        background-color: {theme.surface};
         border: 1px solid {theme.border};
         border-radius: 16px;
     }}
 
     QLabel {{
         color: {theme.text};
-        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+        font-family: '{_INTER_FAMILY}', 'Inter', 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
     }}
 
     QLabel#headerTitle {{
@@ -151,29 +244,29 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
     QLabel#headerSubtitle {{
         font-size: 11px;
         font-weight: 400;
-        color: {theme.muted};
+        color: {theme.text_secondary};
     }}
 
     QLineEdit {{
-        background-color: {theme.surface};
+        background-color: {theme.secondary};
         color: {theme.text};
         border: 1.5px solid {theme.border};
         border-radius: 10px;
         padding: 8px 12px;
         font-size: 13px;
-        selection-background-color: {theme.accent};
-        selection-color: #FFFFFF;
+        selection-background-color: {theme.pink};
+        selection-color: {theme.background};
     }}
 
     QLineEdit:focus {{
-        border: 1.5px solid {theme.accent};
-        background-color: {theme.card};
+        border: 1.5px solid {theme.pink};
+        background-color: {theme.surface};
     }}
 
     /* Primary Accent Button (Send) */
     QPushButton#primaryButton {{
-        background-color: {theme.accent};
-        color: #FFFFFF;
+        background-color: {theme.pink};
+        color: {theme.background};
         border: none;
         border-radius: 10px;
         padding: 8px 16px;
@@ -182,7 +275,7 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
     }}
 
     QPushButton#primaryButton:hover {{
-        background-color: {theme.accent_hover};
+        background-color: {theme.pink_soft};
     }}
 
     QPushButton#primaryButton:pressed {{
@@ -191,7 +284,7 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
 
     QPushButton#primaryButton:disabled {{
         background-color: {theme.border};
-        color: {theme.muted};
+        color: {theme.text_secondary};
     }}
 
     /* Secondary Button (Cancel / Retry / New Screenshot) */
@@ -206,12 +299,13 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
     }}
 
     QPushButton#secondaryButton:hover {{
-        background-color: {theme.pill_bg};
-        border: 1px solid {theme.accent};
+        background-color: {theme.elevated};
+        border: 1px solid {theme.pink};
+        color: {theme.pink};
     }}
 
     QPushButton#secondaryButton:pressed {{
-        background-color: {theme.border};
+        background-color: {theme.secondary};
     }}
 
     /* Header Icon Buttons */
@@ -220,23 +314,23 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
         border: none;
         border-radius: 6px;
         padding: 4px;
-        color: {theme.muted};
+        color: {theme.text_secondary};
     }}
 
     QPushButton#iconButton:hover {{
-        background-color: {theme.surface};
-        color: {theme.accent};
+        background-color: {theme.elevated};
+        color: {theme.pink};
     }}
 
     QPushButton#iconButton:checked {{
-        background-color: {theme.pill_bg};
-        color: {theme.accent};
+        background-color: {theme.elevated};
+        color: {theme.pink};
     }}
 
     /* Chip Button (Short / Detailed) */
     QPushButton#chipButton {{
-        background-color: {theme.surface};
-        color: {theme.muted};
+        background-color: {theme.secondary};
+        color: {theme.text_secondary};
         border: 1px solid {theme.border};
         border-radius: 11px;
         padding: 3px 9px;
@@ -245,29 +339,29 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
     }}
 
     QPushButton#chipButton:hover {{
-        border-color: {theme.accent};
-        color: {theme.accent};
+        border-color: {theme.pink};
+        color: {theme.pink};
     }}
 
     /* Action Preset Chips in AskView (solid flat colors) */
     QPushButton#presetChip {{
-        background-color: {theme.surface};
+        background-color: {theme.secondary};
         color: {theme.text};
         border: 1px solid {theme.border};
         border-radius: 9px;
-        padding: 5px 9px;
+        padding: 5px 10px;
         font-size: 11px;
         font-weight: 500;
     }}
 
     QPushButton#presetChip:hover {{
-        background-color: {theme.pill_bg};
-        border-color: {theme.accent};
-        color: {theme.accent};
+        background-color: {theme.elevated};
+        border-color: {theme.pink};
+        color: {theme.pink};
     }}
 
     QPushButton#presetChip:pressed {{
-        background-color: {theme.border};
+        background-color: {theme.surface};
     }}
 
     /* Answer markdown area */
@@ -294,7 +388,7 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
     }}
 
     QScrollBar::handle:vertical:hover {{
-        background: {theme.accent};
+        background: {theme.pink};
     }}
 
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{

@@ -271,3 +271,38 @@ def get_key_state(vk: int) -> int:
 def is_key_down(vk: int) -> bool:
     """Return True if the high-order bit indicates the key is down."""
     return bool((get_key_state(vk) & 0x8000) != 0)
+
+
+# SystemParametersInfo action constants
+SPI_GETCLIENTAREAANIMATION = 0x1042
+
+_user32.SystemParametersInfoW.argtypes = [
+    wintypes.UINT,
+    wintypes.UINT,
+    ctypes.c_void_p,
+    wintypes.UINT,
+]
+_user32.SystemParametersInfoW.restype = wintypes.BOOL
+
+
+def get_client_area_animation_enabled() -> bool:
+    """Read Windows 'Animation effects' setting (SystemParametersInfo with SPI_GETCLIENTAREAANIMATION).
+
+    Returns:
+        True if client area animations are enabled in Windows, False if user disabled animation effects.
+    """
+    anim_enabled = wintypes.BOOL()
+    result = bool(
+        _user32.SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            ctypes.byref(anim_enabled),
+            0,
+        )
+    )
+    if not result:
+        err = get_last_error()
+        logger.debug("SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION) failed. Win32 Error=%d", err)
+        return True
+    return bool(anim_enabled.value)
+

@@ -389,37 +389,42 @@ class AppController(QObject):
 
         def task():
             try:
+                from datetime import datetime
                 if is_new_conv:
                     title = generate_title(first_q, answer_text)
                     thumbnail = create_thumbnail(first_img) if save_thumbs and first_img else None
-                    new_id = self.history_store.create_conversation(title=title, thumbnail=thumbnail)
-                    self._current_conversation_id = new_id
-                    self.history_store.add_message(
-                        new_id,
-                        role="user",
-                        text=first_q,
-                        has_image=bool(first_img),
-                    )
-                    self.history_store.add_message(
-                        new_id,
-                        role="model",
-                        text=answer_text,
-                        has_image=False,
-                    )
+                    with self.history_store.connect() as conn:
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                        cur = conn.execute(
+                            "INSERT INTO conversations (title, created_at, updated_at, thumbnail) VALUES (?, ?, ?, ?);",
+                            (title, now_str, now_str, thumbnail),
+                        )
+                        new_id = int(cur.lastrowid)
+                        self._current_conversation_id = new_id
+                        conn.execute(
+                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
+                            (new_id, "user", first_q, now_str, int(bool(first_img))),
+                        )
+                        conn.execute(
+                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
+                            (new_id, "model", answer_text, now_str, 0),
+                        )
                     logger.info("Saved new conversation %d ('%s') to history.", new_id, title)
                 else:
-                    self.history_store.add_message(
-                        conv_id,
-                        role="user",
-                        text=curr_q,
-                        has_image=bool(curr_img),
-                    )
-                    self.history_store.add_message(
-                        conv_id,
-                        role="model",
-                        text=answer_text,
-                        has_image=False,
-                    )
+                    with self.history_store.connect() as conn:
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                        conn.execute(
+                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
+                            (conv_id, "user", curr_q, now_str, int(bool(curr_img))),
+                        )
+                        conn.execute(
+                            "INSERT INTO messages (conversation_id, role, text, created_at, has_image) VALUES (?, ?, ?, ?, ?);",
+                            (conv_id, "model", answer_text, now_str, 0),
+                        )
+                        conn.execute(
+                            "UPDATE conversations SET updated_at = ? WHERE id = ?;",
+                            (now_str, conv_id),
+                        )
                     logger.info("Appended message to conversation %d in history.", conv_id)
             except Exception as exc:
                 logger.warning("Failed to save conversation to history: %s", exc)

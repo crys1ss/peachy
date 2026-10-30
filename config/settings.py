@@ -44,6 +44,11 @@ class Settings:
     save_thumbnails: bool = False
     save_history_prompted: bool = False
     history_hotkey: str = "Ctrl+Shift+H"
+    theme: str = "midnight"  # "midnight" (default), "light", "system"
+    reduce_motion: bool = False
+    sound_enabled: bool = True
+    sound_volume: int = 35  # default 35 percent
+
 
 
 def set_launch_at_startup(enabled: bool, exe_path: str | None = None) -> bool:
@@ -137,6 +142,9 @@ def load_settings(path: Path | str | None = None) -> Settings:
             filtered_data["selection_mode"] = "freehand"
         if filtered_data.get("outside_shape") not in ("blank", "keep"):
             filtered_data["outside_shape"] = "blank"
+        if filtered_data.get("theme") not in ("midnight", "light", "system"):
+            filtered_data["theme"] = "midnight"
+
         return Settings(**filtered_data)
     except Exception as exc:
         logger.warning(
