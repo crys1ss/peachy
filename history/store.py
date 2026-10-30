@@ -19,7 +19,9 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
-from typing import Any, Generator, List, Optional
+import tempfile
+import threading
+from typing import Any, Callable, Generator, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,17 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated
 
 
 def get_default_history_db_path() -> Path:
-    """Return default path to history.db at %APPDATA%\\Peachy\\history.db."""
+    r"""Return default path to history.db.
+
+    Lookup order:
+    1. PEACHY_HISTORY_DB_PATH environment variable (for testing & isolated runs)
+    2. %APPDATA%\Peachy\history.db (standard Windows user data)
+    3. ~/.config/Peachy/history.db (standard fallback)
+    """
+    env_db = os.environ.get("PEACHY_HISTORY_DB_PATH")
+    if env_db and env_db.strip():
+        return Path(env_db.strip())
+
     appdata = os.environ.get("APPDATA")
     if appdata:
         base_dir = Path(appdata)
@@ -129,13 +141,38 @@ def create_thumbnail(image_data: Any) -> Optional[bytes]:
         return None
 
 
+_RECOVERY_LOCK = threading.RLock()
+
+
 class HistoryStore:
     """Manages SQLite storage for conversations and messages with safe corruption recovery."""
 
-    def __init__(self, db_path: Optional[Path | str] = None):
+    def __init__(
+        self,
+        db_path: Optional[Path | str] = None,
+        on_fallback: Optional[Callable[[str], None]] = None,
+    ):
         self.db_path = Path(db_path) if db_path is not None else get_default_history_db_path()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.original_db_path = self.db_path
+        self._is_fallback: bool = False
+        self._fallback_reason: Optional[str] = None
+        self.on_fallback = on_fallback
+
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as dir_err:
+            logger.warning("Could not create history directory for %s: %s", self.db_path, dir_err)
         self._init_db()
+
+    @property
+    def is_fallback(self) -> bool:
+        """True if store could not access permanent storage and is operating in a temporary session."""
+        return self._is_fallback
+
+    @property
+    def fallback_reason(self) -> Optional[str]:
+        """Diagnostic explanation if operating in non-persistent temporary fallback mode."""
+        return self._fallback_reason
 
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -157,14 +194,113 @@ class HistoryStore:
         finally:
             conn.close()
 
+    def _is_valid_sqlite_header(self) -> bool:
+        """Check if existing non-empty db_path has standard SQLite format 3 header.
+
+        If a file exists but is not an SQLite database (e.g. invalid header),
+        calling sqlite3.connect() causes SQLite to automatically unlink any
+        companion -wal and -shm files during close, destroying uncheckpointed data.
+        """
+        if not self.db_path.exists():
+            return True
+        try:
+            if self.db_path.stat().st_size == 0:
+                return True
+            with open(self.db_path, "rb") as f:
+                header = f.read(16)
+            return header == b"SQLite format 3\x00"
+        except Exception:
+            return False
+
     def _init_db(self) -> None:
-        """Initialize database schema, backing up and recovering if corrupt."""
+        """Initialize database schema, backing up and recovering if corrupt or inaccessible."""
+        if not self._is_valid_sqlite_header():
+            with _RECOVERY_LOCK:
+                logger.warning(
+                    "History database at %s has invalid header (not an SQLite database). Initiating synchronized recovery.",
+                    self.db_path,
+                )
+                recovered = self._recover_corrupt_db()
+                if recovered:
+                    try:
+                        self._ensure_schema()
+                        logger.info("Successfully recreated fresh history database at original path %s.", self.db_path)
+                        return
+                    except Exception as rec_err:
+                        logger.error(
+                            "Re-initializing schema at original path %s failed after corrupt DB removal: %s",
+                            self.db_path,
+                            rec_err,
+                        )
+                self._activate_temporary_fallback(
+                    reason=f"Recovery failed or invalid database at {self.original_db_path} could not be recreated"
+                )
+                return
+
         try:
             self._ensure_schema()
+            return
         except sqlite3.DatabaseError as exc:
-            logger.warning("History database corrupt (%s). Backing up and recreating fresh DB.", exc)
-            self._recover_corrupt_db()
+            with _RECOVERY_LOCK:
+                # Double-checked locking: check if another thread recovered the database while waiting
+                try:
+                    self._ensure_schema()
+                    return
+                except sqlite3.DatabaseError:
+                    pass
+
+                logger.warning(
+                    "History database at %s corrupt or inaccessible (%s). Initiating synchronized recovery.",
+                    self.db_path,
+                    exc,
+                )
+                recovered = self._recover_corrupt_db()
+                if recovered:
+                    try:
+                        self._ensure_schema()
+                        logger.info("Successfully recreated fresh history database at original path %s.", self.db_path)
+                        return
+                    except Exception as rec_err:
+                        logger.error(
+                            "Re-initializing schema at original path %s failed after corrupt DB removal: %s",
+                            self.db_path,
+                            rec_err,
+                        )
+
+                # ONLY reach fallback if original path is genuinely unusable or recovery failed
+                self._activate_temporary_fallback(
+                    reason=f"Recovery failed or original path {self.original_db_path} is inaccessible ({exc})"
+                )
+
+    def _activate_temporary_fallback(self, reason: str) -> None:
+        """Switch storage session to temporary fallback database without deleting user files."""
+        self._is_fallback = True
+        self._fallback_reason = reason
+
+        fallback_dir = Path(tempfile.gettempdir()) / "peachy_history"
+        try:
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            fallback_db = fallback_dir / f"fallback_{os.getpid()}_{self.original_db_path.name}"
+            logger.error(
+                "STORAGE DEGRADED: HistoryStore cannot access permanent database at %s. "
+                "Reason: %s. "
+                "Operating in temporary session mode at %s. "
+                "WARNING: Chat history in this session will NOT persist across app restarts.",
+                self.original_db_path,
+                reason,
+                fallback_db,
+            )
+            self.db_path = fallback_db
             self._ensure_schema()
+
+            if self.on_fallback:
+                try:
+                    self.on_fallback(self._fallback_reason)
+                except Exception as cb_err:
+                    logger.warning("Error in on_fallback notification callback: %s", cb_err)
+        except Exception as fb_err:
+            logger.critical("Fatal: failed to initialize fallback history database at %s: %s", fallback_dir, fb_err)
+            raise
 
     def _ensure_schema(self) -> None:
         """Execute table creation and schema version verification."""
@@ -175,28 +311,68 @@ class HistoryStore:
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?);", (SCHEMA_VERSION,))
 
-    def _recover_corrupt_db(self) -> None:
-        """Back up corrupt database to history.db.bak and delete the original."""
-        bak_path = self.db_path.with_name(self.db_path.name + ".bak")
-        try:
-            if self.db_path.exists():
-                shutil.copy2(self.db_path, bak_path)
-                logger.info("Corrupt database backed up to %s", bak_path)
-                try:
-                    self.db_path.unlink()
-                except OSError as unl_err:
-                    logger.warning("Could not unlink corrupt db file: %s", unl_err)
+    def _recover_corrupt_db(self) -> bool:
+        """Back up corrupt database and all WAL/SHM artifacts, then remove originals.
 
-            # Also clear any WAL/SHM companion files
-            for ext in ("-wal", "-shm"):
-                companion = self.db_path.with_name(self.db_path.name + ext)
-                if companion.exists():
+        Strict recovery requirements:
+        - The original database file must be backed up to .bak.
+        - Any existing companion files (-wal, -shm) must be backed up to .bak.
+        - The original database file must be successfully unlinked.
+        - Any existing companion files must be successfully unlinked.
+        - All unlinked files must be verified absent from disk.
+        - If ANY operation fails, no original files are left partially removed and False is returned.
+
+        Returns:
+            True only when all artifacts have been backed up and completely removed so
+            the original path can be safely recreated.
+            False if backup, unlinking, or verification fails.
+        """
+        if not self.db_path.exists():
+            return False
+
+        files_to_backup = [self.db_path]
+        for ext in ("-wal", "-shm"):
+            comp = self.db_path.with_name(self.db_path.name + ext)
+            if comp.exists():
+                files_to_backup.append(comp)
+
+        # 1. Back up all existing database files and companions
+        backed_up_pairs = []
+        try:
+            for src_file in files_to_backup:
+                dst_bak = self.db_path.with_name(src_file.name + ".bak")
+                if dst_bak.exists():
                     try:
-                        companion.unlink()
-                    except OSError:
-                        pass
-        except Exception as exc:
-            logger.warning("Failed during corrupt DB recovery backup: %s", exc)
+                        dst_bak.unlink()
+                    except OSError as unl_bak_err:
+                        logger.warning("Could not remove existing backup %s: %s", dst_bak, unl_bak_err)
+                        return False
+
+                shutil.copy2(src_file, dst_bak)
+                backed_up_pairs.append((src_file, dst_bak))
+                logger.info("Database artifact successfully backed up: %s -> %s", src_file, dst_bak)
+        except Exception as copy_err:
+            logger.error("Failed during backup of database artifact %s: %s. Aborting recovery.", src_file, copy_err)
+            return False
+
+        # 2. Strict removal and verification of all original files
+        for src_file in files_to_backup:
+            try:
+                src_file.unlink()
+            except OSError as unl_err:
+                logger.error("Failed to remove database artifact %s: %s. Aborting recovery.", src_file, unl_err)
+                return False
+
+            if src_file.exists():
+                logger.error("Database artifact %s still exists after unlink. Aborting recovery.", src_file)
+                return False
+
+        logger.info(
+            "All corrupt database artifacts (%d files) successfully backed up and removed from %s.",
+            len(files_to_backup),
+            self.db_path,
+        )
+        return True
 
     def create_conversation(self, title: str, thumbnail: Optional[bytes] = None) -> int:
         """Create a new conversation record. Returns new conversation ID."""
