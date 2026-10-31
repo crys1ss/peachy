@@ -15,7 +15,7 @@ import tempfile
 import time
 from typing import Any, List, Optional
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect, QTimer
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRect, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QPixmap, QScreen
 
 from ai.gemini_provider import GeminiProvider
@@ -40,6 +40,9 @@ HARD_TIMEOUT_MS = 45000  # 45 second hard safety timeout
 
 class AppController(QObject):
     """Central coordinator for the Peachy desktop screen assistant."""
+
+    open_in_main_window = Signal(int)
+    attachment_captured = Signal(bytes)
 
     def __init__(
         self,
@@ -73,6 +76,7 @@ class AppController(QObject):
         self._active_worker: Optional[GeminiWorker] = None
         self._current_image_bytes: Optional[bytes] = None
         self._first_image_bytes: Optional[bytes] = None
+        self._capturing_for_attachment: bool = False
         self._first_question: str = ""
         self._current_history: List[Any] = []
         self._current_conversation_id: Optional[int] = None
@@ -113,6 +117,10 @@ class AppController(QObject):
             self.popup.opt_in_choice.connect(self.on_opt_in_choice)
         if hasattr(self.popup, "history_requested"):
             self.popup.history_requested.connect(self.open_history)
+        if hasattr(self.popup, "open_in_main_window"):
+            self.popup.open_in_main_window.connect(self.open_in_main_window.emit)
+        if hasattr(self.popup, "open_in_peachy"):
+            self.popup.open_in_peachy.connect(self.open_in_main_window.emit)
 
         # History and Tray
         if hasattr(self.tray_manager, "history_requested"):
@@ -197,9 +205,15 @@ class AppController(QObject):
                 self._saved_foreground_hwnd = 0
             self.state_manager.reset_to_idle()
 
+    def capture_for_attachment(self) -> None:
+        """Trigger screen capture in attachment mode for Main Window / Composer."""
+        self._capturing_for_attachment = True
+        self.on_activated()
+
     def on_overlay_cancelled(self) -> None:
         """User cancelled overlay selection (Esc, Right-Click, or 60s timeout)."""
         logger.info("Overlay selection cancelled. Returning to IDLE.")
+        self._capturing_for_attachment = False
         self._saved_foreground_hwnd = 0
         self.state_manager.transition_to(AppState.IDLE)
 
@@ -222,7 +236,14 @@ class AppController(QObject):
         buffer = QBuffer(byte_array)
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         crop.save(buffer, "PNG")
-        self._current_image_bytes = bytes(byte_array.data())
+        image_bytes = bytes(byte_array.data())
+        self._current_image_bytes = image_bytes
+
+        if getattr(self, "_capturing_for_attachment", False):
+            self._capturing_for_attachment = False
+            self.state_manager.transition_to(AppState.IDLE)
+            self.attachment_captured.emit(image_bytes)
+            return
 
         # Reset conversation history only if this is a fresh capture, not a New Screenshot flow
         if not self._is_new_screenshot_flow:
