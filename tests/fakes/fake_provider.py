@@ -53,19 +53,24 @@ class FakeProvider(BaseAIProvider):
 
     def ask_stream(
         self,
-        image_png: Optional[bytes] = None,
+        images: list[bytes] = (),
         question: str = "",
         history: Optional[List[Any]] = None,
         answer_length: str = "short",
-        images: Optional[List[bytes]] = None,
-    ) -> Generator[str, None, None]:
+        image_png: Optional[bytes] = None,
+        system_instruction: Optional[str] = None,
+    ) -> Generator[str, None, Optional[dict[str, int]]]:
         """Stream chunks of text or raise a chosen ProviderError."""
+        if not images and image_png is not None:
+            images = [image_png]
+
         self.stream_calls.append({
-            "image_png": image_png,
+            "images": images,
             "question": question,
             "history": history,
             "answer_length": answer_length,
-            "images": images,
+            "image_png": image_png,
+            "system_instruction": system_instruction,
         })
 
         if self.error_to_raise is not None and self.error_after_n_chunks is None:
@@ -78,3 +83,7 @@ class FakeProvider(BaseAIProvider):
                     raise self.error_to_raise
                 raise UnknownError("Simulated mid-stream failure")
             yield chunk
+
+        usage = {"prompt_tokens": 12, "output_tokens": 24, "total_tokens": 36}
+        self.last_usage_metadata = usage
+        return usage
