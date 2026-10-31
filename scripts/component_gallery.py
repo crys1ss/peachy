@@ -44,6 +44,9 @@ from ui.components.code_highlighter import render_markdown_html
 from ui.components.icons import get_available_icon_names, get_svg_icon
 from ui.components.toast import Toast
 from ui.components.toggle_switch import ToggleSwitch
+from config.settings import Settings
+from tests.fakes.fake_chat_session import FakeChatSession
+from ui.main_window import MainWindow
 from ui.theme import (
     ThemeTokens,
     get_app_font,
@@ -327,6 +330,24 @@ def ask_peachy(query: str, fast: bool = True) -> str:
         self.code_browser.setHtml(render_markdown_html(code_snippet, theme=self.theme))
         code_layout.addWidget(self.code_browser)
 
+        # 8. Main Window Shell Preview
+        _, main_layout = self._create_section("8. Main Window Shell (Fake Data Preview)")
+        main_desc = QLabel("MainWindow preview with Sidebar, WelcomeView, and FakeChatSession:")
+        main_layout.addWidget(main_desc)
+
+        self._fake_store = _create_mock_store()
+        self._fake_settings = Settings(display_name="Zidane", theme=self._mode, accent=self._accent)
+        self._fake_session = FakeChatSession()
+
+        self.preview_main_win = MainWindow(
+            store=self._fake_store,
+            settings=self._fake_settings,
+            chat_session=self._fake_session,
+            parent=self.canvas,
+        )
+        self.preview_main_win.setFixedHeight(540)
+        main_layout.addWidget(self.preview_main_win)
+
     def _on_theme_changed(self) -> None:
         self._mode = self.mode_combo.currentData()
         self._accent = self.accent_combo.currentData()
@@ -354,8 +375,14 @@ def ask_peachy(query: str, fast: bool = True) -> str:
     def _apply_theme(self) -> None:
         t = self.theme
         self.setStyleSheet(f"""
-            QWidget {{
+            QMainWindow, QScrollArea, QFrame#galleryCanvas {{
                 background-color: {t.background};
+                color: {t.text};
+                font-family: 'Inter', 'Segoe UI Variable Text', sans-serif;
+            }}
+            QLabel {{
+                background-color: transparent;
+                background: transparent;
                 color: {t.text};
                 font-family: 'Inter', 'Segoe UI Variable Text', sans-serif;
             }}
@@ -461,6 +488,87 @@ def ask_peachy(query: str, fast: bool = True) -> str:
 ```"""
             self.code_browser.setHtml(render_markdown_html(code_snippet, theme=t))
 
+        if hasattr(self, "preview_main_win"):
+            self.preview_main_win.apply_theme(t.name, t.accent)
+
+
+def _create_mock_store():
+    class MockStore:
+        def __init__(self):
+            self._convs = [
+                {"id": 1, "title": "PySide6 Custom Delegates", "preview": "How do I paint a 2 px gradient marker in Qt?", "created_at": "2026-10-31 10:15:00", "pinned": True},
+                {"id": 2, "title": "SQLite WAL Recovery", "preview": "Handling locked companion files gracefully...", "created_at": "2026-10-31 08:30:00", "pinned": False},
+                {"id": 3, "title": "Midnight Design System", "preview": "Deep charcoal background tokens and WCAG 4.5:1 ratios.", "created_at": "2026-10-30 18:20:00", "pinned": False},
+            ]
+            self._messages = {
+                1: [
+                    {"id": 1, "role": "user", "text": "How do I paint a 2 px gradient marker in Qt?"},
+                    {"id": 2, "role": "model", "text": "Use `QLinearGradient` inside your `QStyledItemDelegate.paint` method!"},
+                ]
+            }
+        def list_conversations(self):
+            return list(self._convs)
+        def get_conversation(self, cid):
+            for c in self._convs:
+                if c["id"] == cid:
+                    return c
+            return None
+        def get_messages(self, cid):
+            return list(self._messages.get(cid, []))
+        def rename_conversation(self, cid, title):
+            for c in self._convs:
+                if c["id"] == cid:
+                    c["title"] = title
+        def set_pinned(self, cid, pinned):
+            for c in self._convs:
+                if c["id"] == cid:
+                    c["pinned"] = pinned
+        def delete_conversation(self, cid):
+            self._convs = [c for c in self._convs if c["id"] != cid]
+    return MockStore()
+
+
+def capture_main_window_screenshots(out_dir: Path) -> list[Path]:
+    """Capture main_welcome.png, main_sidebar.png, and main_collapsed.png in out_dir."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+
+    store = _create_mock_store()
+    settings = Settings(display_name="Zidane", theme="midnight", accent="peach", save_history_prompted=False)
+    session = FakeChatSession()
+
+    win = MainWindow(store=store, settings=settings, chat_session=session)
+    win.resize(1100, 720)
+    win.show()
+    QApplication.processEvents()
+
+    # 1. Welcome view
+    p1 = out_dir / "main_welcome.png"
+    win.grab().save(str(p1), "PNG")
+    saved.append(p1)
+
+    # 2. Main with active conversation loaded (sidebar visible)
+    win.sidebar._is_collapsed = False
+    win.sidebar.setFixedWidth(win.sidebar.EXPANDED_WIDTH)
+    win.sidebar._update_collapsed_layout()
+    win.load_conversation(1)
+    QApplication.processEvents()
+    p2 = out_dir / "main_sidebar.png"
+    win.grab().save(str(p2), "PNG")
+    saved.append(p2)
+
+    # 3. Main with collapsed sidebar
+    win.sidebar._is_collapsed = True
+    win.sidebar.setFixedWidth(win.sidebar.COLLAPSED_WIDTH)
+    win.sidebar._update_collapsed_layout()
+    QApplication.processEvents()
+    p3 = out_dir / "main_collapsed.png"
+    win.grab().save(str(p3), "PNG")
+    saved.append(p3)
+
+    win.close()
+    return saved
+
 
 def capture_gallery_screenshots(out_dir: Path) -> list[Path]:
     """Capture screenshots for Midnight and Light across all 4 accents."""
@@ -501,6 +609,10 @@ def main() -> int:
         out = REPO_ROOT / args.out_dir
         saved = capture_gallery_screenshots(out)
         print(f"Captured {len(saved)} gallery screenshots in {out}")
+
+        midnight_dir = REPO_ROOT / "docs/screens/midnight"
+        mw_saved = capture_main_window_screenshots(midnight_dir)
+        print(f"Captured {len(mw_saved)} main window screenshots in {midnight_dir}")
         return 0
 
     win = ComponentGalleryWindow()

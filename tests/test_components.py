@@ -37,22 +37,31 @@ def test_svg_vector_icons_rendering(qtbot):
 
 
 def test_brand_orb_widget(qtbot):
-    """Verify BrandOrb renders with peach highlight and correct dimensions."""
-    orb = BrandOrb(size=22)
+    """Verify BrandOrb renders with accent -> accent_2 gradient and responds to apply_theme."""
+    from ui.theme import get_theme, MIDNIGHT_THEME, LIGHT_THEME
+    orb = BrandOrb(size=22, theme=MIDNIGHT_THEME)
     qtbot.addWidget(orb)
 
     assert orb.width() == 22
     assert orb.height() == 22
     assert orb.sizeHint() == QSize(22, 22)
+    assert orb._theme.accent == "#FF9E7D"
+    assert orb._theme.accent_2 == "#FF7A90"
+
+    # Switch theme
+    coral_theme = get_theme(theme_mode="midnight", accent="coral")
+    orb.apply_theme(coral_theme)
+    assert orb._theme.accent == "#FF8A8A"
 
     # Calling repaint should execute paintEvent cleanly
     orb.repaint()
 
 
 def test_pygments_syntax_highlighting():
-    """Verify Pygments code highlighter formats code with Cascadia Code / Consolas and Midnight colors."""
+    """Verify Pygments code highlighter formats code with Cascadia Code / Consolas and theme colors."""
+    from ui.theme import MIDNIGHT_THEME, LIGHT_THEME
     sample_code = "def hello_world():\n    return 'peachy'"
-    html_out = highlight_code(sample_code, language="python")
+    html_out = highlight_code(sample_code, language="python", theme=MIDNIGHT_THEME)
 
     assert "Cascadia Code" in html_out
     assert "Consolas" in html_out
@@ -60,12 +69,16 @@ def test_pygments_syntax_highlighting():
     assert "#292735" in html_out  # Border
     assert "hello_world" in html_out
 
-    # Test markdown wrapper
+    # Test markdown wrapper with explicit theme
     md_sample = "# Title\n\n```python\nx = 42\n```\n\nEnd text."
-    rendered_md = render_markdown_html(md_sample)
+    rendered_md = render_markdown_html(md_sample, theme=MIDNIGHT_THEME)
     assert "# Title" in rendered_md
     assert "Cascadia Code" in rendered_md
     assert "End text." in rendered_md
+
+    # Light theme test
+    light_out = highlight_code(sample_code, language="python", theme=LIGHT_THEME)
+    assert LIGHT_THEME.secondary in light_out
 
 
 def test_stream_throttler(qtbot):

@@ -348,6 +348,7 @@ def get_card_stylesheet(theme: ThemeTokens) -> str:
     }}
 
     QLabel {{
+        background-color: transparent;
         color: {theme.text};
         font-family: '{_INTER_FAMILY}', 'Inter', 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
     }}
