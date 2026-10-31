@@ -110,3 +110,73 @@ def test_toast_notification(qtbot):
     # Trigger hide
     toast.hide_toast(animate=False)
     assert not toast.isVisible()
+
+
+def test_toggle_switch_component(qtbot):
+    """Verify ToggleSwitch state transitions, click/spacebar activation, and reduce motion snapping."""
+    from unittest.mock import patch
+    from ui.components.toggle_switch import ToggleSwitch
+    from ui.theme import MIDNIGHT_THEME, LIGHT_THEME
+
+    sw = ToggleSwitch(checked=False, theme=MIDNIGHT_THEME)
+    qtbot.addWidget(sw)
+    assert sw.isChecked() is False
+    assert sw.thumb_position == 0.0
+
+    # Toggle to True with instant snapping (duration=0)
+    with patch("ui.components.toggle_switch.duration", return_value=0):
+        sw.setChecked(True)
+        assert sw.isChecked() is True
+        assert sw.thumb_position == 1.0
+
+        # Toggle via click
+        sw.click()
+        assert sw.isChecked() is False
+        assert sw.thumb_position == 0.0
+
+    # Live theme update
+    sw.apply_theme(LIGHT_THEME)
+    assert sw._theme == LIGHT_THEME
+
+
+def test_chip_component(qtbot):
+    """Verify Chip selection state, icon recoloring, and theme application."""
+    from ui.components.chip import Chip
+    from ui.theme import MIDNIGHT_THEME, LIGHT_THEME
+
+    chip = Chip("Fix Code", icon_name="edit", selected=False, theme=MIDNIGHT_THEME)
+    qtbot.addWidget(chip)
+    assert chip.isChecked() is False
+    assert chip.text() == "Fix Code"
+    assert not chip.icon().isNull()
+
+    # Click toggles selection
+    chip.click()
+    assert chip.isChecked() is True
+
+    # Theme application
+    chip.apply_theme(LIGHT_THEME)
+    assert chip._theme == LIGHT_THEME
+
+
+def test_redesign_all_21_vector_icons():
+    """Verify all 21 icons specified in docs/REDESIGN.md Section 3.4 render cleanly."""
+    required_icons = [
+        "plus", "search", "sidebar", "pin", "more", "edit", "regenerate",
+        "paperclip", "image", "scissors", "send", "stop", "settings",
+        "chevron", "check", "x", "sun", "moon", "keyboard", "shield", "info"
+    ]
+
+    for name in required_icons:
+        svg_xml = render_svg_string(name, color="#FF9E7D")
+        assert "viewBox=\"0 0 20 20\"" in svg_xml
+        assert "stroke-width=\"1.5\"" in svg_xml
+        assert "#FF9E7D" in svg_xml
+
+        pix = get_svg_pixmap(name, color="#FF9E7D", size=20)
+        assert not pix.isNull()
+        assert pix.width() == 20
+        assert pix.height() == 20
+
+        icon = get_svg_icon(name, color="#FF9E7D", size=20)
+        assert not icon.isNull()

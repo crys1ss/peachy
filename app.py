@@ -282,11 +282,19 @@ class PeachyApp(QObject):
             get_sound_manager(new_settings)
             if hasattr(self, "history_window") and self.history_window:
                 self.history_window.settings = new_settings
-                self.history_window.apply_theme(new_settings.theme)
+                self.history_window.apply_theme(
+                    theme_mode=new_settings.theme,
+                    accent=getattr(new_settings, "accent", "peach"),
+                    font_scale=getattr(new_settings, "font_scale", 100),
+                )
             if hasattr(self, "popup") and self.popup:
                 self.popup.settings = new_settings
                 if hasattr(self.popup, "apply_theme"):
-                    self.popup.apply_theme(new_settings.theme)
+                    self.popup.apply_theme(
+                        theme_mode=new_settings.theme,
+                        accent=getattr(new_settings, "accent", "peach"),
+                        font_scale=getattr(new_settings, "font_scale", 100),
+                    )
             if hasattr(self.popup, "set_pinned"):
                 self.popup.set_pinned(new_settings.pinned)
             else:

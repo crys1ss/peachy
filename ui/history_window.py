@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
 from config.settings import Settings, load_settings
 from history.store import HistoryStore
 from ui.peachy_popup import SparkleWidget
-from ui.theme import ThemeTokens, get_app_font, get_theme
+from ui.theme import ThemeTokens, get_app_font, get_theme, set_font_scale
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +107,18 @@ class HistoryWindow(QDialog):
         self.resize(840, 580)
         self.setStyleSheet(self._generate_stylesheet())
 
-    def apply_theme(self, theme_mode: Optional[str] = None) -> None:
-        """Apply theme mode dynamically and re-style history window."""
+    def apply_theme(
+        self,
+        theme_mode: Optional[str] = None,
+        accent: Optional[str] = None,
+        font_scale: Optional[float | int] = None,
+    ) -> None:
+        """Apply theme mode, accent, and font scale dynamically and re-style history window."""
         mode = theme_mode or getattr(self.settings, "theme", "midnight")
-        self.theme = get_theme(theme_mode=mode)
+        acc = accent or getattr(self.settings, "accent", "peach")
+        if font_scale is not None:
+            set_font_scale(font_scale)
+        self.theme = get_theme(theme_mode=mode, accent=acc)
         self.setStyleSheet(self._generate_stylesheet())
         self.reload_history()
 

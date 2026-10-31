@@ -80,6 +80,33 @@ def test_get_theme_mode_propagation_settings_window(qtbot):
     assert win_mid.theme_tokens.name == "light"
 
 
+def test_apply_theme_with_accent_and_font_scale_all_three_windows(qtbot):
+    """Verify apply_theme propagates theme_mode, accent, and font_scale to all 3 windows."""
+    mock_store = MagicMock()
+    mock_store.list_conversations.return_value = []
+
+    # 1. PeachyPopup
+    popup = PeachyPopup(settings=Settings(theme="midnight"))
+    qtbot.addWidget(popup)
+    popup.apply_theme(theme_mode="light", accent="coral", font_scale=110)
+    assert popup.theme.name == "light"
+    assert popup.theme.accent == "#B83232"
+
+    # 2. HistoryWindow
+    hist_win = HistoryWindow(store=mock_store, settings=Settings(theme="light"))
+    qtbot.addWidget(hist_win)
+    hist_win.apply_theme(theme_mode="midnight", accent="rose", font_scale=90)
+    assert hist_win.theme.name == "midnight"
+    assert hist_win.theme.accent == "#FF7AB6"
+
+    # 3. SettingsWindow
+    set_win = SettingsWindow(settings=Settings(theme="midnight"))
+    qtbot.addWidget(set_win)
+    set_win.apply_theme(theme_mode="light", accent="lavender", font_scale=125)
+    assert set_win.theme_tokens.name == "light"
+    assert set_win.theme_tokens.accent == "#5A3EB5"
+
+
 def test_settings_window_appearance_and_sound_controls_load(qtbot):
     """Verify theme, motion, and sound controls populate accurately from settings."""
     test_settings = Settings(

@@ -75,3 +75,70 @@ def test_sound_manager_rereads_updated_settings(qapp):
     assert mgr2 is mgr1
     assert mgr2.get_volume() == 85
     assert mgr2.is_muted is True
+
+
+def test_motion_duration_snapping_to_zero():
+    """Verify duration() returns 0 ms when reduce_motion is active."""
+    from ui.motion import duration, DUR_LAUNCH, DUR_SIDEBAR
+
+    s_reduce = Settings(reduce_motion=True)
+    assert duration(DUR_LAUNCH, settings=s_reduce) == 0
+    assert duration(DUR_SIDEBAR, settings=s_reduce) == 0
+    assert duration(150, settings=s_reduce) == 0
+
+
+def test_motion_fade_and_slide_snapping(qtbot):
+    """Verify fade and slide execute immediately without animation when reduce_motion is True."""
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtCore import QPoint
+    from ui.motion import fade, slide
+
+    widget = QWidget()
+    qtbot.addWidget(widget)
+    s_reduce = Settings(reduce_motion=True)
+
+    # Fade test
+    fade_finished = False
+    def on_fade_done():
+        nonlocal fade_finished
+        fade_finished = True
+
+    anim_fade = fade(widget, start=0.0, end=1.0, ms=200, on_finished=on_fade_done, settings=s_reduce)
+    assert anim_fade is None
+    assert fade_finished is True
+    # Effect is removed because end is 1.0
+    assert widget.graphicsEffect() is None
+
+    # Slide test
+    slide_finished = False
+    def on_slide_done():
+        nonlocal slide_finished
+        slide_finished = True
+
+    anim_slide = slide(widget, "pos", QPoint(0, 0), QPoint(100, 100), ms=200, on_finished=on_slide_done, settings=s_reduce)
+    assert anim_slide is None
+    assert slide_finished is True
+    assert widget.pos() == QPoint(100, 100)
+
+
+def test_motion_fade_animation_removes_effect_on_finish(qtbot):
+    """Verify fade removes QGraphicsOpacityEffect after animated completion."""
+    from PySide6.QtWidgets import QWidget
+    from unittest.mock import patch
+    from ui.motion import fade
+
+    widget = QWidget()
+    qtbot.addWidget(widget)
+
+    done_called = False
+    def on_done():
+        nonlocal done_called
+        done_called = True
+
+    with patch("ui.motion.should_animate", return_value=True):
+        anim = fade(widget, start=0.0, end=1.0, ms=40, on_finished=on_done)
+        assert anim is not None
+        assert widget.graphicsEffect() is not None
+        qtbot.waitUntil(lambda: done_called, timeout=1000)
+        # Effect should be cleanly removed upon completion
+        assert widget.graphicsEffect() is None

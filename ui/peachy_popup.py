@@ -71,7 +71,14 @@ from ui.components.code_highlighter import render_markdown_html
 from ui.components.icons import get_svg_icon, get_svg_pixmap
 from ui.components.toast import Toast
 from ui.sound import get_sound_manager
-from ui.theme import ThemeTokens, get_app_font, get_card_stylesheet, get_code_font, get_theme
+from ui.theme import (
+    ThemeTokens,
+    get_app_font,
+    get_card_stylesheet,
+    get_code_font,
+    get_theme,
+    set_font_scale,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +108,7 @@ class ViewIndex(IntEnum):
     ERROR = 3
 
 
-def should_animate(settings: Optional[Settings] = None) -> bool:
-    """Return True if UI animations should run, False if motion reduction is requested."""
-    if settings is not None and getattr(settings, "reduce_motion", False):
-        return False
-    return get_client_area_animation_enabled()
+from ui.motion import should_animate
 
 
 def calculate_popup_position(
@@ -1019,18 +1022,27 @@ class PeachyPopup(QWidget):
         cx, cy = clamp_popup_to_screen(pill_pos.x(), pill_pos.y(), self.width(), self.height(), ag.x(), ag.y(), ag.width(), ag.height())
         self.move(cx, cy)
         self.show()
+        self.raise_()
 
-    def apply_theme(self, theme_mode: Optional[str] = None) -> None:
-        """Apply theme mode dynamically and re-style all popup components."""
+    def apply_theme(
+        self,
+        theme_mode: Optional[str] = None,
+        accent: Optional[str] = None,
+        font_scale: Optional[float | int] = None,
+    ) -> None:
+        """Apply theme mode, accent and font scale dynamically and re-style all popup components."""
         mode = theme_mode or getattr(self.settings, "theme", "midnight")
-        self.theme = get_theme(theme_mode=mode)
+        acc = accent or getattr(self.settings, "accent", "peach")
+        if font_scale is not None:
+            set_font_scale(font_scale)
+        self.theme = get_theme(theme_mode=mode, accent=acc)
         if hasattr(self, "card") and self.card:
             self.card.setStyleSheet(get_card_stylesheet(self.theme))
             if hasattr(self, "_shadow") and self._shadow:
                 self._shadow.setColor(QColor(self.theme.shadow_color))
         if hasattr(self, "pin_btn") and self.pin_btn:
             pin_name = "pin" if self._is_pinned else "unpin"
-            pin_color = self.theme.pink if self._is_pinned else self.theme.text_secondary
+            pin_color = self.theme.accent if self._is_pinned else self.theme.text_secondary
             self.pin_btn.setIcon(get_svg_icon(pin_name, color=pin_color, size=16))
         if hasattr(self, "close_btn") and self.close_btn:
             self.close_btn.setIcon(get_svg_icon("close", color=self.theme.text_secondary, size=16))
@@ -1051,7 +1063,6 @@ class PeachyPopup(QWidget):
             self.error_view.apply_theme(self.theme)
         if hasattr(self, "pill") and self.pill:
             self.pill.apply_theme(self.theme)
-        self.raise_()
 
     def show_ask(self, pixmap: QPixmap) -> None:
         """Display Ask view with focus enabled so the user can immediately type."""
