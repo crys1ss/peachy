@@ -237,13 +237,14 @@ class AppController(QObject):
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         crop.save(buffer, "PNG")
         image_bytes = bytes(byte_array.data())
-        self._current_image_bytes = image_bytes
 
         if getattr(self, "_capturing_for_attachment", False):
             self._capturing_for_attachment = False
             self.state_manager.transition_to(AppState.IDLE)
             self.attachment_captured.emit(image_bytes)
             return
+
+        self._current_image_bytes = image_bytes
 
         # Reset conversation history only if this is a fresh capture, not a New Screenshot flow
         if not self._is_new_screenshot_flow:

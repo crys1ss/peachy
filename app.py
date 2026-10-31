@@ -195,6 +195,14 @@ class PeachyApp(QObject):
         self.history_store = HistoryStore()
         self.history_window = HistoryWindow(store=self.history_store, settings=self.settings)
 
+        # Check for --fake-provider flag for demos and UI testing
+        if "--fake-provider" in sys.argv:
+            from tests.fakes.fake_provider import FakeProvider
+            self.provider = FakeProvider()
+            self.logger.info("Using FakeProvider (--fake-provider CLI flag active)")
+        else:
+            self.provider = None
+
         # 9. App Controller
         self.controller = AppController(
             state_manager=self.state_manager,
@@ -202,6 +210,7 @@ class PeachyApp(QObject):
             tray_manager=self.tray_manager,
             overlay_manager=self.overlay_manager,
             popup=self.popup,
+            provider=self.provider,
             settings=self.settings,
             history_store=self.history_store,
             history_window=self.history_window,

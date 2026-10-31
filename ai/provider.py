@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Generator, List, Optional
 
 
 class ProviderError(Exception):
@@ -132,3 +132,32 @@ class BaseAIProvider(ABC):
             ProviderError or one of its typed subclasses on failure.
         """
         raise NotImplementedError
+
+    def ask_stream(
+        self,
+        images: list[bytes] = (),
+        question: str = "",
+        history: Optional[List[Any]] = None,
+        answer_length: str = "short",
+        system_instruction: Optional[str] = None,
+    ) -> Generator[str, None, Optional[dict[str, int]]]:
+        """Submit a prompt and optional images to stream response chunks.
+
+        Yields:
+            Incremental text chunk strings.
+
+        Returns:
+            Optional usage metadata dict: {"prompt_tokens": int, "output_tokens": int, "total_tokens": int}.
+
+        Raises:
+            ProviderError or one of its typed subclasses on failure.
+        """
+        # Default fallback wrapper around ask() for backwards compatibility
+        img = images[0] if images else None
+        res = self.ask(image_png=img, question=question, history=history, answer_length=answer_length)
+        yield res.text
+        return None
+
+    def list_models(self) -> List[str]:
+        """Return model IDs that support generateContent."""
+        return ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash"]

@@ -14,7 +14,7 @@ from __future__ import annotations
 import io
 import logging
 import os
-from typing import Any, List, Optional
+from typing import Any, Generator, List, Optional
 
 import httpx
 from PIL import Image
@@ -49,6 +49,14 @@ SYSTEM_INSTRUCTION = (
     "Be short by default and detailed only when asked. "
     "If text is blurry or cut off, say exactly what you cannot read. "
     "Never invent text that is not visible. Use simple markdown."
+)
+
+SYSTEM_INSTRUCTION_CHAT = (
+    "You are Peachy, a direct, concise desktop AI assistant. Provide helpful, accurate responses "
+    "using clean markdown formatting for code, lists, and tables. Avoid conversational filler, "
+    "unnecessary preambles, and sycophantic pleasantries (never say 'Sure!', 'Certainly!', 'I would be happy to help'). "
+    "Answer directly, accurately, and thoughtfully. Provide code in fenced code blocks with language identifiers. "
+    "Be concise by default; provide depth and step-by-step detail when the user asks for detail."
 )
 
 MAX_IMAGE_LONG_SIDE = 2048
@@ -132,6 +140,12 @@ class GeminiProvider(BaseAIProvider):
         self._model = model
         self._api_key = api_key
         self._client = client
+        self._last_usage_metadata: Optional[dict[str, int]] = None
+
+    @property
+    def last_usage_metadata(self) -> Optional[dict[str, int]]:
+        """Return the usage metadata from the most recent streaming response."""
+        return self._last_usage_metadata
 
     def get_model_name(self) -> str:
         """Resolve model name prioritizing env var PEACHY_MODEL over settings."""
@@ -237,45 +251,222 @@ class GeminiProvider(BaseAIProvider):
 
                 return AnswerResult(text=text.strip(), history=new_history)
 
-            except (BlockedError, EmptyResponseError, InvalidKeyError, RateLimitedError):
-                raise
-
-            except errors.APIError as err:
-                code = getattr(err, "code", None)
-                msg = str(getattr(err, "message", str(err))).lower()
-
-                if code in (401, 403) or (
-                    code == 400 and any(k in msg for k in ["api_key", "invalid", "key not valid", "api key"])
-                ):
-                    raise InvalidKeyError(original_error=err) from err
-                if code == 429 or "resource_exhausted" in msg or "quota" in msg:
-                    raise RateLimitedError(original_error=err) from err
-
-                # If server overload (404 model not found, 500, 502, 503, 504) and fallbacks remain, try next model
-                if (code in (404, 500, 502, 503, 504) or "unavailable" in msg or "not found" in msg or "deadline" in msg) and idx < len(models_to_try) - 1:
-                    logger.warning("Model %s returned code %s (%s); trying fallback %s", current_model, code, msg, models_to_try[idx + 1])
+            except Exception as err:
+                if self._is_fallback_eligible(err) and idx < len(models_to_try) - 1:
+                    logger.warning("Model %s failed (%s); trying fallback %s", current_model, err, models_to_try[idx + 1])
                     continue
+                self._map_and_raise_error(err)
 
-                if code in (408, 504) or "deadline" in msg or "timed out" in msg:
-                    raise TimeoutError(original_error=err) from err
-                if code in (500, 502, 503) or "unavailable" in msg:
-                    if "demand" in msg or code == 503:
-                        raise NetworkError("Gemini servers are currently experiencing high demand. Please try again in a moment.", original_error=err) from err
-                    raise NetworkError("Gemini service is temporarily unavailable. Please try again later.", original_error=err) from err
+    def _is_fallback_eligible(self, err: Exception) -> bool:
+        """Return True if the error is a temporary server overload or timeout eligible for fallback."""
+        if isinstance(err, (BlockedError, EmptyResponseError, InvalidKeyError, RateLimitedError)):
+            return False
+        if isinstance(err, (httpx.TimeoutException, TimeoutError)):
+            return True
+        if isinstance(err, errors.APIError):
+            code = getattr(err, "code", None)
+            msg = str(getattr(err, "message", str(err))).lower()
+            if code in (404, 500, 502, 503, 504) or any(k in msg for k in ["unavailable", "not found", "deadline", "overloaded"]):
+                return True
+        return False
 
-                raise UnknownError(message=f"Gemini API error ({code}): {err.message}", original_error=err) from err
+    def _map_and_raise_error(self, err: Exception) -> None:
+        """Map caught client or HTTP errors to typed ProviderError exceptions and raise."""
+        if isinstance(err, ProviderError):
+            raise err
 
-            except httpx.TimeoutException as err:
-                if idx < len(models_to_try) - 1:
-                    logger.warning("Model %s timed out; trying fallback %s", current_model, models_to_try[idx + 1])
-                    continue
+        if isinstance(err, errors.APIError):
+            code = getattr(err, "code", None)
+            msg = str(getattr(err, "message", str(err))).lower()
+
+            if code in (401, 403) or (
+                code == 400 and any(k in msg for k in ["api_key", "invalid", "key not valid", "api key"])
+            ):
+                raise InvalidKeyError(original_error=err) from err
+            if code == 429 or "resource_exhausted" in msg or "quota" in msg:
+                raise RateLimitedError(original_error=err) from err
+            if code in (408, 504) or "deadline" in msg or "timed out" in msg:
                 raise TimeoutError(original_error=err) from err
+            if code in (500, 502, 503) or "unavailable" in msg:
+                if "demand" in msg or code == 503:
+                    raise NetworkError(
+                        "Gemini servers are currently experiencing high demand. Please try again in a moment.",
+                        original_error=err,
+                    ) from err
+                raise NetworkError(
+                    "Gemini service is temporarily unavailable. Please try again later.",
+                    original_error=err,
+                ) from err
 
-            except (httpx.NetworkError, ConnectionError, OSError) as err:
-                raise NetworkError(original_error=err) from err
+            raise UnknownError(
+                message=f"Gemini API error ({code}): {getattr(err, 'message', str(err))}",
+                original_error=err,
+            ) from err
 
-            except ProviderError:
-                raise
+        if isinstance(err, httpx.TimeoutException):
+            raise TimeoutError(original_error=err) from err
+
+        if isinstance(err, (httpx.NetworkError, ConnectionError, OSError)):
+            raise NetworkError(original_error=err) from err
+
+        raise UnknownError(message=f"Unexpected error: {str(err)}", original_error=err) from err
+
+    def ask_stream(
+        self,
+        images: list[bytes] = (),
+        question: str = "",
+        history: Optional[List[Any]] = None,
+        answer_length: str = "short",
+        image_png: Optional[bytes] = None,
+        system_instruction: Optional[str] = None,
+    ) -> Generator[str, None, Optional[dict[str, int]]]:
+        """Stream response chunks using client.models.generate_content_stream.
+
+        Documentation reference:
+            Official Google GenAI Python SDK:
+            https://googleapis.github.io/python-genai/ (client.models.generate_content_stream)
+            https://ai.google.dev/gemini-api/docs/text-generation#generate-a-text-stream
+
+        Rules:
+            - Explicitly disables AFC (Automatic Function Calling).
+            - Fallback to next model occurs ONLY before the first chunk is yielded.
+            - Once the first chunk is sent, errors end the stream immediately without fallback.
+            - Usage metadata is captured from the final chunk and returned / recorded.
+        """
+        client = self._get_client()
+        model_name = self.get_model_name()
+
+        all_images = list(images)
+        if not all_images and image_png is not None:
+            all_images.append(image_png)
+
+        user_parts: List[types.Part] = []
+        for img_bytes in all_images:
+            if img_bytes:
+                prep_bytes = prepare_image(img_bytes)
+                user_parts.append(types.Part.from_bytes(data=prep_bytes, mime_type="image/png"))
+
+        q_text = question.strip() if question else ""
+        if not q_text and not all_images:
+            q_text = "Hello"
+        elif not q_text and all_images:
+            q_text = "Explain this image"
+        user_parts.append(types.Part.from_text(text=q_text))
+
+        contents: List[types.Content] = []
+        if history:
+            contents.extend(history)
+        contents.append(types.Content(role="user", parts=user_parts))
+
+        sys_inst = system_instruction or SYSTEM_INSTRUCTION_CHAT
+        if answer_length == "detailed":
+            sys_inst += " Provide a detailed, thorough explanation with in-depth context and clear steps."
+
+        config = types.GenerateContentConfig(
+            system_instruction=sys_inst,
+            http_options=types.HttpOptions(timeout=20000),  # 20s read timeout per chunk
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True,
+            ),
+        )
+
+        models_to_try = [model_name]
+        settings = load_settings()
+        if getattr(settings, "fallback_models_enabled", True):
+            for fallback in FALLBACK_MODELS:
+                if fallback not in models_to_try:
+                    models_to_try.append(fallback)
+
+        chunk_yielded = False
+        last_chunk = None
+
+        for idx, current_model in enumerate(models_to_try):
+            try:
+                response_stream = client.models.generate_content_stream(
+                    model=current_model,
+                    contents=contents,
+                    config=config,
+                )
+
+                stream_iter = iter(response_stream)
+
+                for chunk in stream_iter:
+                    # Check safety filter blocks
+                    if hasattr(chunk, "candidates") and chunk.candidates:
+                        cand = chunk.candidates[0]
+                        if hasattr(cand, "finish_reason") and cand.finish_reason:
+                            reason = str(cand.finish_reason).upper()
+                            if any(b in reason for b in ["SAFETY", "BLOCKLIST", "PROHIBITED"]):
+                                raise BlockedError()
+
+                    text = chunk.text
+                    if text:
+                        chunk_yielded = True
+                        yield text
+                    last_chunk = chunk
+
+                if not chunk_yielded:
+                    raise EmptyResponseError()
+
+                if idx > 0:
+                    logger.info("Primary model %s unavailable; responded using fallback model %s", model_name, current_model)
+
+                break
 
             except Exception as err:
-                raise UnknownError(message=f"Unexpected error: {str(err)}", original_error=err) from err
+                # If a chunk has already been yielded to caller:
+                # Fallback to another model is STRICTLY DISALLOWED!
+                if chunk_yielded:
+                    logger.error(
+                        "Error occurred mid-stream on model %s after chunks were sent. Fallback disallowed: %s",
+                        current_model,
+                        err,
+                    )
+                    self._map_and_raise_error(err)
+
+                # If error happened BEFORE first chunk:
+                # Fallback to next model if eligible
+                if self._is_fallback_eligible(err) and idx < len(models_to_try) - 1:
+                    logger.warning(
+                        "Model %s failed before first chunk (%s); falling back to %s",
+                        current_model,
+                        err,
+                        models_to_try[idx + 1],
+                    )
+                    continue
+
+                self._map_and_raise_error(err)
+
+        usage_info = {
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        if last_chunk and hasattr(last_chunk, "usage_metadata") and last_chunk.usage_metadata:
+            um = last_chunk.usage_metadata
+            usage_info["prompt_tokens"] = getattr(um, "prompt_token_count", 0) or 0
+            usage_info["output_tokens"] = getattr(um, "candidates_token_count", 0) or 0
+            usage_info["total_tokens"] = getattr(um, "total_token_count", 0) or 0
+
+        self._last_usage_metadata = usage_info
+        return usage_info
+
+    def list_models(self) -> List[str]:
+        """Return available Gemini model IDs that support generateContent, with static fallback on error."""
+        try:
+            client = self._get_client()
+            models = []
+            for m in client.models.list():
+                name = getattr(m, "name", "")
+                if name.startswith("models/"):
+                    name = name[len("models/"):]
+                supported = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", None)
+                if supported is None or "generateContent" in supported:
+                    if name and "gemini" in name.lower() and "embedding" not in name.lower():
+                        models.append(name)
+            if models:
+                return sorted(list(set(models)))
+        except Exception as exc:
+            logger.warning("Failed to query models from Gemini API (%s). Using static fallback.", exc)
+
+        return list(FALLBACK_MODELS)

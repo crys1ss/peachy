@@ -432,7 +432,8 @@ class HistoryStore:
             shutil.copy2(self.db_path, bak_path)
             logger.info("Created pre-migration backup: %s -> %s", self.db_path, bak_path)
         except Exception as bak_err:
-            logger.warning("Failed to create pre-migration backup %s: %s", bak_path, bak_err)
+            logger.error("Failed to create pre-migration backup %s: %s. Skipping migration to protect user data.", bak_path, bak_err)
+            return
 
         # 2. Run migration in one transaction
         with self.connect() as conn:

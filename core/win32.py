@@ -306,3 +306,94 @@ def get_client_area_animation_enabled() -> bool:
         return True
     return bool(anim_enabled.value)
 
+
+# DWM (Desktop Window Manager) configuration
+try:
+    _dwmapi = ctypes.windll.dwmapi
+    _dwmapi.DwmSetWindowAttribute.argtypes = [
+        wintypes.HWND,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    _dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+except (AttributeError, OSError):
+    _dwmapi = None
+
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+DWMWA_SYSTEMBACKDROP_TYPE = 38
+
+DWMSBT_AUTO = 0
+DWMSBT_NONE = 1
+DWMSBT_MAINWINDOW = 2        # Mica
+DWMSBT_TRANSIENTWINDOW = 3   # Acrylic
+DWMSBT_TABBEDWINDOW = 4      # Tabbed / Mica Alt
+
+
+def set_dark_title_bar(hwnd: int, dark: bool) -> bool:
+    """Set the window's native title bar to dark or light mode using DwmSetWindowAttribute.
+
+    Uses DWMWA_USE_IMMERSIVE_DARK_MODE=20 (Windows 10 20H1+ / Windows 11; falls back to 19 on 1903/1909).
+    A safe no-op returning False on older Windows or unsupported platforms.
+    """
+    if not hwnd or _dwmapi is None:
+        return False
+
+    val = wintypes.BOOL(1 if dark else 0)
+    # Modern attribute 20
+    hr = _dwmapi.DwmSetWindowAttribute(
+        wintypes.HWND(hwnd),
+        DWMWA_USE_IMMERSIVE_DARK_MODE,
+        ctypes.byref(val),
+        ctypes.sizeof(val),
+    )
+    if hr == 0:
+        return True
+
+    # Legacy attribute 19
+    hr_old = _dwmapi.DwmSetWindowAttribute(
+        wintypes.HWND(hwnd),
+        DWMWA_USE_IMMERSIVE_DARK_MODE_OLD,
+        ctypes.byref(val),
+        ctypes.sizeof(val),
+    )
+    return hr_old == 0
+
+
+def set_backdrop(hwnd: int, kind: str | int = "mica") -> bool:
+    """Set the window backdrop type using DwmSetWindowAttribute (DWMWA_SYSTEMBACKDROP_TYPE = 38).
+
+    Supported kinds on Windows 11 22H2+ (Build 22621+):
+    - "auto" (0)
+    - "none" (1)
+    - "mica" (2)
+    - "acrylic" (3)
+    - "tabbed" (4)
+    A silent no-op returning False on older Windows or unsupported platforms.
+    """
+    if not hwnd or _dwmapi is None:
+        return False
+
+    kind_map = {
+        "auto": DWMSBT_AUTO,
+        "none": DWMSBT_NONE,
+        "mica": DWMSBT_MAINWINDOW,
+        "acrylic": DWMSBT_TRANSIENTWINDOW,
+        "tabbed": DWMSBT_TABBEDWINDOW,
+    }
+    if isinstance(kind, str):
+        val_int = kind_map.get(kind.lower(), DWMSBT_MAINWINDOW)
+    else:
+        val_int = int(kind)
+
+    val = wintypes.DWORD(val_int)
+    hr = _dwmapi.DwmSetWindowAttribute(
+        wintypes.HWND(hwnd),
+        DWMWA_SYSTEMBACKDROP_TYPE,
+        ctypes.byref(val),
+        ctypes.sizeof(val),
+    )
+    return hr == 0
+
+

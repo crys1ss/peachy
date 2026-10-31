@@ -667,4 +667,54 @@ Generated 5 preview screenshots into `docs/screens/`:
 ### Known Bugs
 - None.
 
+---
+
+## Task PCH-106 Summary (Track B Core: Streaming Provider, ChatSession & Win32 DWM)
+
+### What Works & Is Done
+1. **Streaming Provider & Model Discovery ([ai/gemini_provider.py](file:///c:/Users/TANAY/Downloads/Peachy/ai/gemini_provider.py))**:
+   - `ask_stream(images, question, history, answer_length, system_instruction)` generator yielding text chunks and returning usage metadata.
+   - Built on official `client.models.generate_content_stream` (SDK ref: `https://googleapis.github.io/python-genai/`).
+   - AFC disabled (`automatic_function_calling.disable = True`).
+   - Strict fallback rule: fallback to secondary model occurs ONLY before the first chunk is yielded; mid-stream errors terminate the stream without fallback.
+   - Final chunk usage metadata (`prompt_tokens`, `output_tokens`, `total_tokens`) captured on `provider.last_usage_metadata`.
+   - `SYSTEM_INSTRUCTION_CHAT` for the main chat window; `SYSTEM_INSTRUCTION` retained for the overlay popup.
+   - `list_models()` returns models supporting `generateContent`, with static fallback on API error.
+2. **Stream Worker Thread ([core/stream_worker.py](file:///c:/Users/TANAY/Downloads/Peachy/core/stream_worker.py))**:
+   - `StreamWorker(QThread)` handles streaming off the UI thread with request ID matching.
+   - Thread-safe watchdog cancels request if no chunk arrives within 20 seconds.
+   - Cancellation (`cancel()`) cleans up resources promptly.
+   - Privacy-safe logging never outputs user prompts.
+3. **ChatSession Controller ([core/chat_session.py](file:///c:/Users/TANAY/Downloads/Peachy/core/chat_session.py))**:
+   - Full implementation of REDESIGN.md §7 contract.
+   - `build_context_history()` enforces 40-turn cap, 60k character cap, and image omission on older turns (`[image omitted]`).
+   - Off-thread SQLite writes via `HistoryDbWorker`.
+   - Respects `save_history` and `save_thumbnails` settings.
+   - Non-blocking AI title generation on first answer (never overwrites when `title_locked=1`).
+   - Full support for `new_chat`, `load`, `send`, `regenerate`, `edit_and_resend`, and `stop` (persists status `"stopped"`).
+4. **Win32 DWM Enhancements ([core/win32.py](file:///c:/Users/TANAY/Downloads/Peachy/core/win32.py))**:
+   - `set_dark_title_bar(hwnd, dark)` using `DWMWA_USE_IMMERSIVE_DARK_MODE` (20/19).
+   - `set_backdrop(hwnd, kind)` using `DWMWA_SYSTEMBACKDROP_TYPE` (38) for Mica, Acrylic, Tabbed.
+   - Safe ctypes wrappers with HRESULT validation, safe on older Windows versions.
+5. **App CLI Flag ([app.py](file:///c:/Users/TANAY/Downloads/Peachy/app.py))**:
+   - Added `--fake-provider` flag for test runs and UI work without requiring a Gemini API key.
+6. **Review Fixes from PCH-104**:
+   - `AppController.on_crop_confirmed`: attach mode returns before setting `_current_image_bytes` and preserves overlay state.
+   - `HistoryStore._migrate_v1_to_v2`: logs at `ERROR` and aborts migration if `.v1.bak` copy fails.
+
+### Verified by Automated Tests (251/251 pytest tests passed in 13.47s)
+- `tests/test_stream_provider.py`: chunk streaming, fallback rules, mid-stream error behavior, usage metadata, list_models.
+- `tests/test_chat_session.py`: 40-turn/60k context cap, image omission, new_chat, send, regenerate, edit_and_resend, stop.
+- `tests/test_chat_session_contract.py`: Signal, method, signature, and behavioral parity between `ChatSession` and `FakeChatSession`.
+- `tests/test_win32_dwmapi.py`: Modern/legacy dark title bar attributes, backdrops, invalid HWND / non-Windows fallbacks.
+- `tests/test_pch106_review_fixes.py`: Backup failure abort at ERROR, attach mode state isolation, `--fake-provider` flag parsing.
+- All 213 prior tests continue to pass 100% green.
+
+### Needs Manual Check (Physical User Testing)
+- Verify `python app.py --fake-provider` starts properly with `FakeProvider`.
+
+### Known Bugs
+- None.
+
+
 
